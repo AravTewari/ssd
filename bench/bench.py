@@ -23,6 +23,8 @@ def parse_arguments():
     parser.add_argument("--qwen", action="store_true", help="Use Qwen models instead of Llama")
     parser.add_argument("--draft", type=str, default=None,
                         help="Draft model size (0.6 for Qwen-0.6B, 1 for Llama-1B) or path to draft model")
+    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion"], default="ar",
+                        help="Draft backend implementation to use")
 
     # Execution configuration
     parser.add_argument("--eager", action="store_true", help="Use eager execution (disable CUDA graphs)")
@@ -38,6 +40,7 @@ def parse_arguments():
     parser.add_argument("--flh", type=int, nargs='+', default=None, help="Fan out list (e.g., --flh 1 3 4 becomes [1, 3, 4])")
     parser.add_argument("--flm", type=int, nargs='+', default=None, help="Fan out list miss (e.g., --flm 1 3 4 becomes [1, 3, 4])")
     parser.add_argument("--backup", type=str, choices=["jit", "fast"], default="jit", help="Backup strategy (jit or fast)")
+    parser.add_argument("--dsteps", type=int, default=128, help="Number of diffusion denoising steps for llada_diffusion")
 
     # Memory and batching configuration
     parser.add_argument("--block_sz", type=int, default=256, help="KV cache block size (see config.py: kvcache_block_size)")
@@ -85,6 +88,12 @@ def parse_arguments():
         assert args.llama, "Eagle currently only supports llama models"
         assert args.temp == 0.0 and args.dtemp is None, "Eagle currently only supports greedy decoding (temp=0)"
         assert getattr(args, 'async', False), "Eagle currently only supports async speculative decoding"
+    if args.draft_backend == "llada_diffusion":
+        assert args.spec, "--draft-backend llada_diffusion requires --spec"
+        assert not getattr(args, "async", False), "--draft-backend llada_diffusion does not support --async"
+        assert args.temp == 0.0 and args.dtemp in (None, 0, 0.0), (
+            "--draft-backend llada_diffusion only supports greedy decoding"
+        )
     return args
 
 
@@ -108,11 +117,13 @@ def create_run_name(args):
     if args.dtemp is not None:
         temp_str += f"_dtemp{args.dtemp}"
 
+    backend_str = f"_backend{args.draft_backend}"
     draft_str = f"_draft{args.draft}" if args.draft is not None else "_nodraft"
     k_str = f"_k{args.k}"
     f_str = f"_f{args.f}"
+    dsteps_str = f"_dsteps{args.dsteps}" if args.draft_backend == "llada_diffusion" else ""
 
-    return args.name if args.name else f"{model_type}_size{args.size}_{spec_mode_str}{async_mode_str}{jit_mode_str}_b{args.b}{k_str}{f_str}{draft_str}{temp_str}{sampler_x_str}{example_str}{humaneval_str}{alpaca_str}{c4_str}{ultrafeedback_str}{random_str}{all_str}{gsm_str}"
+    return args.name if args.name else f"{model_type}_size{args.size}_{spec_mode_str}{async_mode_str}{jit_mode_str}{backend_str}_b{args.b}{k_str}{f_str}{dsteps_str}{draft_str}{temp_str}{sampler_x_str}{example_str}{humaneval_str}{alpaca_str}{c4_str}{ultrafeedback_str}{random_str}{all_str}{gsm_str}"
 
 
 def initialize_wandb(args, run_name):
@@ -140,6 +151,8 @@ def initialize_wandb(args, run_name):
             "output_len": args.output_len,
             "numseqs": args.numseqs,
             "draft_model": args.draft,
+            "draft_backend": args.draft_backend,
+            "diffusion_steps": args.dsteps if args.draft_backend == "llada_diffusion" else None,
             "b": args.b,
             "block_size": args.block_sz,
             "eager": args.eager,
@@ -174,6 +187,8 @@ def create_llm_kwargs(args, draft_path):
         sampler_x=args.x,
         jit_speculate=(args.backup == "jit"),
         max_steps=args.max_steps,
+        draft_backend=args.draft_backend,
+        diffusion_steps=args.dsteps,
     )
 
     if args.flh is not None:
@@ -210,6 +225,11 @@ def log_wandb_metrics(args, metrics, total_tokens, total_time, throughput, model
         if "target_step_times" in metrics and metrics["target_step_times"]:
             avg_target_step_time_ms = sum(metrics["target_step_times"]) * 1000 / len(metrics["target_step_times"])
             wandb_metrics["metrics_avg_target_step_time_ms"] = avg_target_step_time_ms
+
+        if "diffusion_draft_step_times" in metrics and metrics["diffusion_draft_step_times"]:
+            wandb_metrics["metrics_avg_diffusion_draft_step_time_ms"] = (
+                sum(metrics["diffusion_draft_step_times"]) * 1000 / len(metrics["diffusion_draft_step_times"])
+            )
 
         if "cache_hits" in metrics and metrics["cache_hits"]:
             wandb_metrics["metrics_avg_cache_hits"] = sum(metrics["cache_hits"]) / len(metrics["cache_hits"])
@@ -249,12 +269,17 @@ def reset_metrics():
             METRICS[k] = 0
 
 
-def reconfigure_engine(llm, b=None):
+def reconfigure_engine(llm, b=None, diffusion_steps=None):
     """Reconfigure a live engine for a new sweep run without reloading weights."""
     if b is not None:
         assert b <= llm.config.max_num_seqs, f"b={b} > initial max_num_seqs={llm.config.max_num_seqs}"
         llm.config.max_num_seqs = b
         llm.scheduler.max_num_seqs = b
+    if diffusion_steps is not None:
+        assert diffusion_steps > 0, "diffusion_steps must be > 0"
+        llm.config.diffusion_steps = diffusion_steps
+        if hasattr(llm, "diffusion_adapter"):
+            llm.diffusion_adapter.config.diffusion_steps = diffusion_steps
 
 
 def main():
@@ -308,15 +333,17 @@ def main():
     else:
         sweep_configs = [{}]
 
+    sweep_results = []
     for si, sweep_cfg in enumerate(sweep_configs):
         bad_keys = {"backup", "flh", "flm"} & set(sweep_cfg.keys())
         assert not bad_keys, f"Cannot sweep {bad_keys} — draft process won't see changes."
 
         temp = sweep_cfg.get("temp", args.temp)
         b = sweep_cfg.get("b", args.b)
+        dsteps = sweep_cfg.get("dsteps", args.dsteps)
         run_name_override = sweep_cfg.get("name", None)
 
-        reconfigure_engine(llm, b=b)
+        reconfigure_engine(llm, b=b, diffusion_steps=dsteps)
 
         cur_sampling_params = [SamplingParams(
             temperature=temp,
@@ -327,6 +354,8 @@ def main():
 
         reset_metrics()
 
+        orig_temp, orig_name, orig_b, orig_dsteps = args.temp, args.name, args.b, args.dsteps
+        args.temp, args.b, args.dsteps = temp, b, dsteps
         if run_name_override:
             cur_run_name = run_name_override
         elif args.sweep:
@@ -334,16 +363,14 @@ def main():
         else:
             cur_run_name = create_run_name(args)
 
-        orig_temp, orig_name, orig_b = args.temp, args.name, args.b
-        args.temp, args.b = temp, b
         if run_name_override:
             args.name = run_name_override
         initialize_wandb(args, cur_run_name)
-        args.temp, args.name, args.b = orig_temp, orig_name, orig_b
+        args.temp, args.name, args.b, args.dsteps = orig_temp, orig_name, orig_b, orig_dsteps
 
         try:
             print(f"\n{'='*60}")
-            print(f"SWEEP [{si+1}/{len(sweep_configs)}] temp={temp} b={b}")
+            print(f"SWEEP [{si+1}/{len(sweep_configs)}] temp={temp} b={b} dsteps={dsteps}")
             print(f"{'='*60}")
 
             outputs, total_time, metrics = run_benchmark(args, llm, prompts, cur_sampling_params)
@@ -356,9 +383,24 @@ def main():
             async_mode = " + Async" if getattr(args, 'async', False) else ""
             jit_mode = " + JIT" if args.backup == "jit" else ""
             x_mode = f" + X({args.x})" if args.x else ""
-            full_mode = mode + spec_mode + async_mode + jit_mode + x_mode
+            backend_mode = f" + Backend({args.draft_backend})" if args.spec else ""
+            diffusion_mode = f" + DSteps({dsteps})" if args.draft_backend == "llada_diffusion" else ""
+            full_mode = mode + spec_mode + async_mode + jit_mode + x_mode + backend_mode + diffusion_mode
 
             print(f"Model: {model_name}, Mode: {full_mode}, Total: {total_tokens}tok, Time: {total_time:.2f}s, Total Throughput: {throughput:.2f}tok/s")
+            sweep_results.append({
+                "b": b,
+                "dsteps": dsteps,
+                "throughput": throughput,
+                "accepted_suffix": (
+                    sum(metrics["accepted_suffix_lens_with_recovery"]) / len(metrics["accepted_suffix_lens_with_recovery"])
+                    if metrics.get("accepted_suffix_lens_with_recovery") else None
+                ),
+                "diffusion_draft_ms": (
+                    sum(metrics["diffusion_draft_step_times"]) * 1000 / len(metrics["diffusion_draft_step_times"])
+                    if metrics.get("diffusion_draft_step_times") else None
+                ),
+            })
 
             if not args.random and si == 0:
                 print("\n" + "="*80)
@@ -389,6 +431,19 @@ def main():
         except KeyboardInterrupt:
             print("\nBenchmark interrupted by user")
             break
+
+    if sweep_results:
+        best = max(sweep_results, key=lambda item: item["throughput"])
+        print(f"\n{'='*60}")
+        print("BEST SWEEP RESULT")
+        print(f"{'='*60}")
+        print(
+            f"Best b={best['b']}, dsteps={best['dsteps']}, throughput={best['throughput']:.2f}tok/s"
+        )
+        if best["accepted_suffix"] is not None:
+            print(f"Accepted suffix mean (incl recovery): {best['accepted_suffix']:.2f}")
+        if best["diffusion_draft_ms"] is not None:
+            print(f"Mean diffusion draft step time: {best['diffusion_draft_ms']:.2f}ms")
 
     print(f'Engine exited!')
     sys.exit(0)

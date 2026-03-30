@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from transformers import AutoConfig
 import torch
 from ssd.paths import DEFAULT_TARGET, DEFAULT_DRAFT
+from ssd.utils.misc import infer_model_family
 
 @dataclass
 class Config:
@@ -23,8 +24,12 @@ class Config:
     draft_hf_config: AutoConfig | None = None
     speculate: bool = False 
     draft: str = DEFAULT_DRAFT
+    draft_backend: str = "ar"
     speculate_k: int = 1
     draft_async: bool = False
+    diffusion_steps: int = 128
+    diffusion_remasking: str = "low_confidence"
+    diffusion_mask_id: int = 126336
     
     # async spec only
     async_fan_out: int = 3
@@ -53,6 +58,11 @@ class Config:
         assert os.path.isdir(model)
 
         assert 1 <= self.num_gpus <= 8 # this codebase only works on one node 
+        assert self.draft_backend in {"ar", "llada_diffusion"}, (
+            f"Unsupported draft_backend={self.draft_backend}"
+        )
+        if self.draft_backend == "llada_diffusion":
+            assert self.speculate, "llada_diffusion requires speculate=True"
         self.hf_config = AutoConfig.from_pretrained(model)
         self.max_model_len = min(
             self.max_model_len, self.hf_config.max_position_embeddings) 
@@ -61,6 +71,15 @@ class Config:
             self.draft_hf_config = AutoConfig.from_pretrained(draft)
             self.max_model_len = min(
                 self.max_model_len, self.draft_hf_config.max_position_embeddings)
+            if self.draft_backend == "llada_diffusion":
+                assert not self.draft_async, "llada_diffusion only supports synchronous speculation"
+                assert infer_model_family(self.model) == "qwen", (
+                    "llada_diffusion currently only supports Qwen targets"
+                )
+                assert self.diffusion_steps > 0, "diffusion_steps must be > 0"
+                assert self.diffusion_remasking == "low_confidence", (
+                    "llada_diffusion v1 only supports low_confidence remasking"
+                )
             if self.draft_async:
                 if self.fan_out_list is None: 
                     self.fan_out_list = [self.async_fan_out] * (self.speculate_k + 1)

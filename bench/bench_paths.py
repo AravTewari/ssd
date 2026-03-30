@@ -42,6 +42,10 @@ EAGLE3_QWEN_32B = os.environ.get(
     "SSD_EAGLE3_QWEN_32B",
     f"{HF_CACHE_DIR}/models--RedHatAI--Qwen3-32B-speculator.eagle3",
 )
+DEFAULT_LLADA_DRAFT = os.environ.get(
+    "SSD_LLADA_DRAFT_MODEL",
+    f"{HF_CACHE_DIR}/models--GSAI-ML--LLaDA-8B-Instruct",
+)
 
 MODELS = {
     "llama_70b": os.environ.get(

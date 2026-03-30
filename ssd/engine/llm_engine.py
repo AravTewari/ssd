@@ -8,8 +8,10 @@ from ssd.engine.sequence import Sequence
 from ssd.engine.scheduler import Scheduler
 from ssd.engine.model_runner import ModelRunner
 from ssd.engine.draft_runner import DraftRunner
+from ssd.engine.diffusion_draft_adapter import LLaDADiffusionAdapter
 from ssd.engine.speculator_async import SpeculatorAsync
 from ssd.engine.speculator_sync import SpeculatorSync
+from ssd.engine.speculator_sync_diffusion import SpeculatorSyncDiffusion
 from ssd.engine.step import InferenceStep, AutoRegressiveStep, SpecDecodeStep
 from ssd.engine.verifier import Verifier
 
@@ -18,6 +20,7 @@ from dataclasses import fields
 from time import perf_counter
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
+import torch
 import torch.multiprocessing as mp
 
 
@@ -33,6 +36,7 @@ METRICS = {
     "decode_total_tokens": 0,
     "target_step_times": [],
     "target_verify_times": [],
+    "diffusion_draft_step_times": [],
 }
 
 
@@ -50,7 +54,7 @@ class LLMEngine:
         assert config.num_gpus > 1 or not config.draft_async, "ERROR: draft_async requires at least 2 gpus"
             
         # Check that target and draft are from the same family
-        if config.speculate:
+        if config.speculate and config.draft_backend == "ar":
             target_family = infer_model_family(config.model)
             draft_family = infer_model_family(config.draft)
             assert target_family == draft_family, f"ERROR: target model family and draft model family must match"
@@ -107,14 +111,23 @@ class LLMEngine:
             self.prev_allocated_blocks = None
             self.prev_blocks_per_fork = None
 
-        if config.speculate and not config.draft_async:
+        if config.speculate and not config.draft_async and config.draft_backend == "ar":
             # keep it colocated on rank 0, process/dist agnostic in this case
             self.draft_runner = DraftRunner(config)
             self.draft_cfg = self.draft_runner.draft_cfg
             print(f'Draft runner created on rank 0 (no async)', flush=True)
+        elif config.speculate and not config.draft_async and config.draft_backend == "llada_diffusion":
+            self.draft_cfg = config
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
+        if config.speculate and not config.draft_async and config.draft_backend == "llada_diffusion":
+            self.diffusion_adapter = LLaDADiffusionAdapter(
+                config=config,
+                target_tokenizer=self.tokenizer,
+                device=torch.device("cuda:0") if torch.cuda.is_available() else config.device,
+                metrics=METRICS,
+            )
         self.scheduler = Scheduler(config, draft_cfg=self.draft_cfg if config.speculate else None)
         assert config.max_model_len == self.scheduler.max_model_len
 
@@ -184,6 +197,11 @@ class LLMEngine:
             os._exit(0)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
+        if self.config.speculate and self.config.draft_backend == "llada_diffusion":
+            if sampling_params.temperature != 0:
+                raise ValueError("llada_diffusion only supports greedy decoding (temperature=0)")
+            if sampling_params.draft_temperature not in (None, 0, 0.0):
+                raise ValueError("llada_diffusion does not support stochastic draft_temperature")
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
         seq = Sequence(prompt, sampling_params)
@@ -268,6 +286,15 @@ class LLMEngine:
                 else:
                     print(
                         f"[metrics] Avg Tokens per step on Cache Hit: N/A (no cache hits)", flush=True)
+            elif self.config.draft_backend == "llada_diffusion" and METRICS["diffusion_draft_step_times"]:
+                avg_diffusion_step_ms = (
+                    sum(METRICS["diffusion_draft_step_times"]) * 1000 /
+                    len(METRICS["diffusion_draft_step_times"])
+                )
+                print(
+                    f"[metrics] Avg diffusion draft step time (ms): {avg_diffusion_step_ms:.2f}",
+                    flush=True,
+                )
 
     def create_inference_step(self, config: Config) -> InferenceStep:
         if config.speculate:
@@ -287,11 +314,18 @@ class LLMEngine:
                     verbose=config.verbose,
                 )
             else:
-                speculator = SpeculatorSync(
-                    lookahead=config.speculate_k,
-                    device=config.device,
-                    draft_model_runner=self.draft_runner,
-                )
+                if config.draft_backend == "llada_diffusion":
+                    speculator = SpeculatorSyncDiffusion(
+                        lookahead=config.speculate_k,
+                        device=config.device,
+                        diffusion_adapter=self.diffusion_adapter,
+                    )
+                else:
+                    speculator = SpeculatorSync(
+                        lookahead=config.speculate_k,
+                        device=config.device,
+                        draft_model_runner=self.draft_runner,
+                    )
 
             verifier = Verifier(
                 lookahead=config.speculate_k,
