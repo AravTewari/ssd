@@ -23,7 +23,7 @@ def parse_arguments():
     parser.add_argument("--qwen", action="store_true", help="Use Qwen models instead of Llama")
     parser.add_argument("--draft", type=str, default=None,
                         help="Draft model size (0.6 for Qwen-0.6B, 1 for Llama-1B) or path to draft model")
-    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion"], default="ar",
+    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion", "dream_diffusion"], default="ar",
                         help="Draft backend implementation to use")
 
     # Execution configuration
@@ -40,7 +40,7 @@ def parse_arguments():
     parser.add_argument("--flh", type=int, nargs='+', default=None, help="Fan out list (e.g., --flh 1 3 4 becomes [1, 3, 4])")
     parser.add_argument("--flm", type=int, nargs='+', default=None, help="Fan out list miss (e.g., --flm 1 3 4 becomes [1, 3, 4])")
     parser.add_argument("--backup", type=str, choices=["jit", "fast"], default="jit", help="Backup strategy (jit or fast)")
-    parser.add_argument("--dsteps", type=int, default=128, help="Number of diffusion denoising steps for llada_diffusion")
+    parser.add_argument("--dsteps", type=int, default=128, help="Number of diffusion denoising steps for diffusion draft backends")
 
     # Memory and batching configuration
     parser.add_argument("--block_sz", type=int, default=256, help="KV cache block size (see config.py: kvcache_block_size)")
@@ -88,11 +88,11 @@ def parse_arguments():
         assert args.llama, "Eagle currently only supports llama models"
         assert args.temp == 0.0 and args.dtemp is None, "Eagle currently only supports greedy decoding (temp=0)"
         assert getattr(args, 'async', False), "Eagle currently only supports async speculative decoding"
-    if args.draft_backend == "llada_diffusion":
-        assert args.spec, "--draft-backend llada_diffusion requires --spec"
-        assert not getattr(args, "async", False), "--draft-backend llada_diffusion does not support --async"
+    if args.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+        assert args.spec, f"--draft-backend {args.draft_backend} requires --spec"
+        assert not getattr(args, "async", False), f"--draft-backend {args.draft_backend} does not support --async"
         assert args.temp == 0.0 and args.dtemp in (None, 0, 0.0), (
-            "--draft-backend llada_diffusion only supports greedy decoding"
+            f"--draft-backend {args.draft_backend} only supports greedy decoding"
         )
     return args
 
@@ -121,7 +121,7 @@ def create_run_name(args):
     draft_str = f"_draft{args.draft}" if args.draft is not None else "_nodraft"
     k_str = f"_k{args.k}"
     f_str = f"_f{args.f}"
-    dsteps_str = f"_dsteps{args.dsteps}" if args.draft_backend == "llada_diffusion" else ""
+    dsteps_str = f"_dsteps{args.dsteps}" if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else ""
 
     return args.name if args.name else f"{model_type}_size{args.size}_{spec_mode_str}{async_mode_str}{jit_mode_str}{backend_str}_b{args.b}{k_str}{f_str}{dsteps_str}{draft_str}{temp_str}{sampler_x_str}{example_str}{humaneval_str}{alpaca_str}{c4_str}{ultrafeedback_str}{random_str}{all_str}{gsm_str}"
 
@@ -152,7 +152,7 @@ def initialize_wandb(args, run_name):
             "numseqs": args.numseqs,
             "draft_model": args.draft,
             "draft_backend": args.draft_backend,
-            "diffusion_steps": args.dsteps if args.draft_backend == "llada_diffusion" else None,
+            "diffusion_steps": args.dsteps if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else None,
             "b": args.b,
             "block_size": args.block_sz,
             "eager": args.eager,
@@ -282,6 +282,14 @@ def reconfigure_engine(llm, b=None, diffusion_steps=None):
             llm.diffusion_adapter.config.diffusion_steps = diffusion_steps
 
 
+def load_sweep_configs(args):
+    if args.sweep:
+        sweep_configs = json.loads(args.sweep)
+        assert isinstance(sweep_configs, list), "--sweep must be a JSON list of dicts"
+        return sweep_configs
+    return [{}]
+
+
 def main():
     args = parse_arguments()
     seed(0)
@@ -306,6 +314,10 @@ def main():
         max_new_tokens=args.output_len,
     ) for _ in range(num_reqs)]
 
+    sweep_configs = load_sweep_configs(args)
+    max_sweep_b = max((cfg.get("b", args.b) for cfg in sweep_configs), default=args.b)
+    initial_b = max(args.b, max_sweep_b)
+
     if prompts:
         for i, prompt in enumerate(prompts):
             if isinstance(prompt, str):
@@ -319,19 +331,13 @@ def main():
 
     # Create LLM (once, reused across sweep configs)
     llm_kwargs = create_llm_kwargs(args, draft_path)
+    llm_kwargs["max_num_seqs"] = initial_b
     if args.eagle:
         llm_kwargs['use_eagle'] = True
     if args.debug:
         llm_kwargs['debug_mode'] = True
 
     llm = LLM(model_path, **llm_kwargs)
-
-    # Build sweep configs
-    if args.sweep:
-        sweep_configs = json.loads(args.sweep)
-        assert isinstance(sweep_configs, list), "--sweep must be a JSON list of dicts"
-    else:
-        sweep_configs = [{}]
 
     sweep_results = []
     for si, sweep_cfg in enumerate(sweep_configs):
@@ -384,7 +390,7 @@ def main():
             jit_mode = " + JIT" if args.backup == "jit" else ""
             x_mode = f" + X({args.x})" if args.x else ""
             backend_mode = f" + Backend({args.draft_backend})" if args.spec else ""
-            diffusion_mode = f" + DSteps({dsteps})" if args.draft_backend == "llada_diffusion" else ""
+            diffusion_mode = f" + DSteps({dsteps})" if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else ""
             full_mode = mode + spec_mode + async_mode + jit_mode + x_mode + backend_mode + diffusion_mode
 
             print(f"Model: {model_name}, Mode: {full_mode}, Total: {total_tokens}tok, Time: {total_time:.2f}s, Total Throughput: {throughput:.2f}tok/s")

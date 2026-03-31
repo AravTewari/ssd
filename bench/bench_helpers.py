@@ -6,9 +6,9 @@ from random import randint
 from typing import List, Optional, Tuple
 from transformers import AutoTokenizer
 try:
-    from ssd.paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT
+    from ssd.paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT, DEFAULT_DREAM_DRAFT
 except ImportError:
-    from bench_paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT
+    from bench_paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT, DEFAULT_DREAM_DRAFT
 
 
 def _get_snapshot_path(base_path: str) -> str:
@@ -93,10 +93,10 @@ def _get_draft_model_path(args, cache_dir: str) -> str:
 
 def get_model_paths(args, cache_dir: str = HF_CACHE_DIR) -> Tuple[str, str, Optional[str]]:
     """Resolve model and draft paths (pointing to snapshot dirs with config.json)."""
-    if getattr(args, "draft_backend", "ar") == "llada_diffusion" and args.llama:
-        raise ValueError("llada_diffusion currently only supports Qwen targets")
-    if getattr(args, "draft_backend", "ar") == "llada_diffusion" and getattr(args, "draft", None) and not os.path.isdir(args.draft):
-        raise ValueError("llada_diffusion expects --draft to be a model directory when provided")
+    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion"} and args.llama:
+        raise ValueError(f"{args.draft_backend} currently only supports Qwen targets")
+    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion"} and getattr(args, "draft", None) and not os.path.isdir(args.draft):
+        raise ValueError(f"{args.draft_backend} expects --draft to be a model directory when provided")
 
     if args.llama:
         size_to_model = {
@@ -137,6 +137,8 @@ def get_model_paths(args, cache_dir: str = HF_CACHE_DIR) -> Tuple[str, str, Opti
     # Always resolve a draft path so callers can pass it through unchanged
     if getattr(args, "draft_backend", "ar") == "llada_diffusion":
         draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_LLADA_DRAFT
+    elif getattr(args, "draft_backend", "ar") == "dream_diffusion":
+        draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_DREAM_DRAFT
     elif getattr(args, "eagle", False) or getattr(args, "draft", None):
         draft_base = _get_draft_model_path(args, cache_dir)
     else:

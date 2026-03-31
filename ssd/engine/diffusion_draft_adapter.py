@@ -26,8 +26,9 @@ class LLaDADiffusionAdapter:
         self.model = AutoModel.from_pretrained(
             config.draft,
             trust_remote_code=True,
-            torch_dtype=dtype,
+            dtype=dtype,
         ).to(device).eval()
+        self.model_vocab_size = int(self.model.config.vocab_size)
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.draft,
             trust_remote_code=True,
@@ -39,11 +40,11 @@ class LLaDADiffusionAdapter:
         self._validate_compatibility(target_tokenizer)
 
     def _validate_compatibility(self, target_tokenizer: AutoTokenizer):
-        draft_vocab = self.tokenizer.vocab_size
-        target_vocab = target_tokenizer.vocab_size
-        if draft_vocab != target_vocab:
+        target_vocab = len(target_tokenizer)
+        if target_vocab > self.model_vocab_size:
             raise ValueError(
-                f"llada_diffusion requires matching vocab sizes, got target={target_vocab} draft={draft_vocab}"
+                "llada_diffusion requires the target tokenizer ids to fit within the draft model vocab, "
+                f"got target_size={target_vocab} draft_model_vocab={self.model_vocab_size}"
             )
 
         if (
@@ -73,9 +74,9 @@ class LLaDADiffusionAdapter:
             )
 
         mask_id = self.config.diffusion_mask_id
-        if mask_id < 0 or mask_id >= draft_vocab:
+        if mask_id < 0 or mask_id >= self.model_vocab_size:
             raise ValueError(
-                f"Configured diffusion_mask_id={mask_id} is out of range for vocab size {draft_vocab}"
+                f"Configured diffusion_mask_id={mask_id} is out of range for model vocab size {self.model_vocab_size}"
             )
 
         if target_tokenizer.pad_token_id == mask_id:

@@ -53,24 +53,42 @@ class Config:
     def max_blocks(self): 
         return (self.max_model_len + self.kvcache_block_size - 1) // self.kvcache_block_size
 
+    @staticmethod
+    def _resolve_max_model_len(hf_config: AutoConfig, fallback: int) -> int:
+        for attr in (
+            "max_position_embeddings",
+            "max_sequence_length",
+            "model_max_length",
+            "seq_len",
+            "max_seq_len",
+            "n_positions",
+        ):
+            value = getattr(hf_config, attr, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return fallback
+
     def __post_init__(self):
         model = self.model 
         assert os.path.isdir(model)
 
         assert 1 <= self.num_gpus <= 8 # this codebase only works on one node 
-        assert self.draft_backend in {"ar", "llada_diffusion"}, (
+        assert self.draft_backend in {"ar", "llada_diffusion", "dream_diffusion"}, (
             f"Unsupported draft_backend={self.draft_backend}"
         )
-        if self.draft_backend == "llada_diffusion":
-            assert self.speculate, "llada_diffusion requires speculate=True"
+        if self.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+            assert self.speculate, f"{self.draft_backend} requires speculate=True"
         self.hf_config = AutoConfig.from_pretrained(model)
         self.max_model_len = min(
-            self.max_model_len, self.hf_config.max_position_embeddings) 
+            self.max_model_len, self._resolve_max_model_len(self.hf_config, self.max_model_len)) 
         if self.speculate: 
             draft = self.draft
-            self.draft_hf_config = AutoConfig.from_pretrained(draft)
+            self.draft_hf_config = AutoConfig.from_pretrained(
+                draft,
+                trust_remote_code=(self.draft_backend in {"llada_diffusion", "dream_diffusion"}),
+            )
             self.max_model_len = min(
-                self.max_model_len, self.draft_hf_config.max_position_embeddings)
+                self.max_model_len, self._resolve_max_model_len(self.draft_hf_config, self.max_model_len))
             if self.draft_backend == "llada_diffusion":
                 assert not self.draft_async, "llada_diffusion only supports synchronous speculation"
                 assert infer_model_family(self.model) == "qwen", (
@@ -79,6 +97,19 @@ class Config:
                 assert self.diffusion_steps > 0, "diffusion_steps must be > 0"
                 assert self.diffusion_remasking == "low_confidence", (
                     "llada_diffusion v1 only supports low_confidence remasking"
+                )
+            elif self.draft_backend == "dream_diffusion":
+                assert not self.draft_async, "dream_diffusion only supports synchronous speculation"
+                assert infer_model_family(self.model) == "qwen", (
+                    "dream_diffusion currently only supports Qwen targets"
+                )
+                assert self.diffusion_steps > 0, "diffusion_steps must be > 0"
+                if self.diffusion_remasking == "low_confidence":
+                    self.diffusion_remasking = "entropy"
+                assert self.diffusion_remasking in {
+                    "origin", "maskgit_plus", "topk_margin", "entropy",
+                }, (
+                    "dream_diffusion supports remasking modes: origin, maskgit_plus, topk_margin, entropy"
                 )
             if self.draft_async:
                 if self.fan_out_list is None: 

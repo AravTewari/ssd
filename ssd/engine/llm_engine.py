@@ -9,6 +9,7 @@ from ssd.engine.scheduler import Scheduler
 from ssd.engine.model_runner import ModelRunner
 from ssd.engine.draft_runner import DraftRunner
 from ssd.engine.diffusion_draft_adapter import LLaDADiffusionAdapter
+from ssd.engine.dream_diffusion_adapter import DreamDiffusionAdapter
 from ssd.engine.speculator_async import SpeculatorAsync
 from ssd.engine.speculator_sync import SpeculatorSync
 from ssd.engine.speculator_sync_diffusion import SpeculatorSyncDiffusion
@@ -116,13 +117,14 @@ class LLMEngine:
             self.draft_runner = DraftRunner(config)
             self.draft_cfg = self.draft_runner.draft_cfg
             print(f'Draft runner created on rank 0 (no async)', flush=True)
-        elif config.speculate and not config.draft_async and config.draft_backend == "llada_diffusion":
+        elif config.speculate and not config.draft_async and config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
             self.draft_cfg = config
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
-        if config.speculate and not config.draft_async and config.draft_backend == "llada_diffusion":
-            self.diffusion_adapter = LLaDADiffusionAdapter(
+        if config.speculate and not config.draft_async and config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+            adapter_cls = LLaDADiffusionAdapter if config.draft_backend == "llada_diffusion" else DreamDiffusionAdapter
+            self.diffusion_adapter = adapter_cls(
                 config=config,
                 target_tokenizer=self.tokenizer,
                 device=torch.device("cuda:0") if torch.cuda.is_available() else config.device,
@@ -197,11 +199,11 @@ class LLMEngine:
             os._exit(0)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
-        if self.config.speculate and self.config.draft_backend == "llada_diffusion":
+        if self.config.speculate and self.config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
             if sampling_params.temperature != 0:
-                raise ValueError("llada_diffusion only supports greedy decoding (temperature=0)")
+                raise ValueError(f"{self.config.draft_backend} only supports greedy decoding (temperature=0)")
             if sampling_params.draft_temperature not in (None, 0, 0.0):
-                raise ValueError("llada_diffusion does not support stochastic draft_temperature")
+                raise ValueError(f"{self.config.draft_backend} does not support stochastic draft_temperature")
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
         seq = Sequence(prompt, sampling_params)
@@ -286,7 +288,7 @@ class LLMEngine:
                 else:
                     print(
                         f"[metrics] Avg Tokens per step on Cache Hit: N/A (no cache hits)", flush=True)
-            elif self.config.draft_backend == "llada_diffusion" and METRICS["diffusion_draft_step_times"]:
+            elif self.config.draft_backend in {"llada_diffusion", "dream_diffusion"} and METRICS["diffusion_draft_step_times"]:
                 avg_diffusion_step_ms = (
                     sum(METRICS["diffusion_draft_step_times"]) * 1000 /
                     len(METRICS["diffusion_draft_step_times"])
@@ -314,7 +316,7 @@ class LLMEngine:
                     verbose=config.verbose,
                 )
             else:
-                if config.draft_backend == "llada_diffusion":
+                if config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
                     speculator = SpeculatorSyncDiffusion(
                         lookahead=config.speculate_k,
                         device=config.device,

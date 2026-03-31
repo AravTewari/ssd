@@ -1,20 +1,19 @@
 import argparse
 from pathlib import Path
 
+
 def parse_args():
     try:
         import torch
     except ModuleNotFoundError:
         torch = None
     parser = argparse.ArgumentParser(
-        description="Smoke test for the sync LLaDA diffusion draft backend",
+        description="Smoke test for the sync Dream diffusion draft backend",
     )
     parser.add_argument("--target", type=str, default=None,
                         help="Target model snapshot directory")
     parser.add_argument("--draft", type=str, default=None,
-                        help="LLaDA draft model directory")
-    parser.add_argument("--tokenizer-path", type=str, default=None,
-                        help="Optional tokenizer path override used for compatibility checks")
+                        help="Dream draft model directory")
     parser.add_argument("--prompt", type=str, default="Explain speculative decoding in one sentence.",
                         help="Prompt text to seed the diffusion draft")
     parser.add_argument("--b", type=int, default=1,
@@ -36,7 +35,7 @@ def ensure_model_dir(path: str, label: str):
 def pick_recovery_token(tokenizer) -> int:
     candidates = [
         " the",
-        "Speculative",
+        "Dream",
         ".",
     ]
     for text in candidates:
@@ -52,23 +51,22 @@ def main():
     from transformers import AutoTokenizer
 
     from ssd.config import Config
-    from ssd.engine.diffusion_draft_adapter import LLaDADiffusionAdapter
+    from ssd.engine.dream_diffusion_adapter import DreamDiffusionAdapter
     from ssd.engine.sequence import Sequence
     from ssd.engine.speculator_sync_diffusion import SpeculatorSyncDiffusion
-    from ssd.paths import DEFAULT_LLADA_DRAFT, DEFAULT_TARGET
+    from ssd.paths import DEFAULT_DREAM_DRAFT, DEFAULT_TARGET
     from ssd.sampling_params import SamplingParams
 
     if args.target is None:
         args.target = DEFAULT_TARGET
     if args.draft is None:
-        args.draft = DEFAULT_LLADA_DRAFT
+        args.draft = DEFAULT_DREAM_DRAFT
 
     ensure_model_dir(args.target, "Target")
     ensure_model_dir(args.draft, "Draft")
 
     device = torch.device(args.device)
-    tokenizer_path = args.tokenizer_path or args.target
-    target_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True, trust_remote_code=True)
+    target_tokenizer = AutoTokenizer.from_pretrained(args.target, use_fast=True, trust_remote_code=True)
     if target_tokenizer.pad_token_id is None and target_tokenizer.eos_token_id is not None:
         target_tokenizer.pad_token = target_tokenizer.eos_token
 
@@ -76,14 +74,14 @@ def main():
         model=args.target,
         draft=args.draft,
         speculate=True,
-        draft_backend="llada_diffusion",
+        draft_backend="dream_diffusion",
         speculate_k=args.k,
         diffusion_steps=args.dsteps,
         max_num_seqs=args.b,
     )
 
     metrics = {"diffusion_draft_step_times": []}
-    adapter = LLaDADiffusionAdapter(
+    adapter = DreamDiffusionAdapter(
         config=config,
         target_tokenizer=target_tokenizer,
         device=device,
@@ -126,10 +124,9 @@ def main():
     for row in range(args.b):
         decoded.append(target_tokenizer.decode(result.speculations[row, 1:].tolist(), skip_special_tokens=False))
 
-    print("LLaDA diffusion smoke test passed")
+    print("Dream diffusion smoke test passed")
     print(f"target={args.target}")
     print(f"draft={args.draft}")
-    print(f"tokenizer_path={tokenizer_path}")
     print(f"device={device}")
     print(f"batch={args.b} k={args.k} dsteps={args.dsteps}")
     print(f"speculations_shape={tuple(result.speculations.shape)}")

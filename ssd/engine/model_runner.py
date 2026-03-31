@@ -96,7 +96,7 @@ class ModelRunner:
         self.tp_pg = None 
 
         if should_use_dist: 
-            default_port = 1223 
+            default_port = int(os.environ.get("SSD_DIST_PORT", "1223"))
             dist.init_process_group(
                 "nccl", f"tcp://localhost:{default_port}",
                 world_size=self.world_size,
@@ -679,4 +679,3 @@ class ModelRunner:
                 return logits, conditioning
             return logits
     
-

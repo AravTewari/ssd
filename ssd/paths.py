@@ -36,6 +36,10 @@ DEFAULT_LLADA_DRAFT = os.environ.get(
     "SSD_LLADA_DRAFT_MODEL",
     f"{HF_CACHE_DIR}/models--GSAI-ML--LLaDA-8B-Instruct",
 )
+DEFAULT_DREAM_DRAFT = os.environ.get(
+    "SSD_DREAM_DRAFT_MODEL",
+    f"{HF_CACHE_DIR}/models--Dream-org--Dream-v0-Instruct-7B",
+)
 
 # eagle3 draft model paths. override via env vars if your models live elsewhere.
 EAGLE3_SPECFORGE_70B = os.environ.get(
