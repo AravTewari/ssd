@@ -11,6 +11,8 @@ def infer_model_family(model_path: str) -> str:
             return "qwen"
         elif "llada" in model_path_lower:
             return "llada"
+        elif "dream" in model_path_lower:
+            return "dream"
         else:
             return "unknown"
 

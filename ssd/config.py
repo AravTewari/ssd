@@ -29,7 +29,7 @@ class Config:
     draft_async: bool = False
     diffusion_steps: int = 128
     diffusion_remasking: str = "low_confidence"
-    diffusion_mask_id: int = 126336
+    diffusion_mask_id: int = -1  # auto-detect from draft config
     
     # async spec only
     async_fan_out: int = 3
@@ -68,9 +68,10 @@ class Config:
             self.max_model_len, self.hf_config.max_position_embeddings) 
         if self.speculate: 
             draft = self.draft
-            self.draft_hf_config = AutoConfig.from_pretrained(draft)
-            self.max_model_len = min(
-                self.max_model_len, self.draft_hf_config.max_position_embeddings)
+            self.draft_hf_config = AutoConfig.from_pretrained(draft, trust_remote_code=True)
+            if hasattr(self.draft_hf_config, "max_position_embeddings"):
+                self.max_model_len = min(
+                    self.max_model_len, self.draft_hf_config.max_position_embeddings)
             if self.draft_backend == "llada_diffusion":
                 assert not self.draft_async, "llada_diffusion only supports synchronous speculation"
                 assert infer_model_family(self.model) == "qwen", (
@@ -80,6 +81,13 @@ class Config:
                 assert self.diffusion_remasking == "low_confidence", (
                     "llada_diffusion v1 only supports low_confidence remasking"
                 )
+                # auto-detect mask_token_id from draft config
+                if self.diffusion_mask_id < 0:
+                    detected = getattr(self.draft_hf_config, "mask_token_id", None)
+                    assert detected is not None, (
+                        "diffusion_mask_id not set and draft config has no mask_token_id"
+                    )
+                    self.diffusion_mask_id = detected
             if self.draft_async:
                 if self.fan_out_list is None: 
                     self.fan_out_list = [self.async_fan_out] * (self.speculate_k + 1)

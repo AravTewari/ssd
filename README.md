@@ -118,6 +118,28 @@ python -O chat.py --sglang --ar   # autoregressive
 python -O chat.py --vllm          # spec decode
 ```
 
+### Diffusion Draft Backend
+
+The engine supports a **masked diffusion model** as the draft backend (`--draft-backend llada_diffusion`). Instead of autoregressive token-by-token drafting, a diffusion model fills all K speculative positions in one denoising pass.
+
+Tested with [Dream-v0-Instruct-7B](https://huggingface.co/Dream-org/Dream-v0-Instruct-7B) (Qwen2.5 tokenizer) as the draft model. Requires `--spec --temp 0` (greedy only, sync only).
+
+```bash
+cd bench
+
+# Diffusion draft benchmark (Qwen target + Dream-7B draft)
+python -O bench.py --qwen --size 32 --spec \
+  --draft-backend llada_diffusion \
+  --draft /path/to/Dream-v0-Instruct-7B \
+  --k 8 --dsteps 64 --b 1 --temp 0 --numseqs 128 --output_len 512
+
+# Smoke test (single GPU, no target model needed)
+python scripts/smoke_llada_diffusion.py \
+  --target /path/to/Qwen2.5-3B-Instruct \
+  --draft /path/to/Dream-v0-Instruct-7B \
+  --b 1 --k 4 --dsteps 32
+```
+
 ### Roadmap
 
 Features that will be supported in the near future: 

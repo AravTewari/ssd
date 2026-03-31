@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+from transformers import AutoTokenizer
 
 def parse_args():
     try:
@@ -110,12 +111,12 @@ def main():
     result = speculator.speculate(seqs, verify_result=None)
 
     expected_spec_shape = (args.b, args.k + 1)
-    expected_logits_shape = (args.b, args.k, target_tokenizer.vocab_size)
     assert tuple(result.speculations.shape) == expected_spec_shape, (
         f"Expected speculations shape {expected_spec_shape}, got {tuple(result.speculations.shape)}"
     )
-    assert tuple(result.logits_q.shape) == expected_logits_shape, (
-        f"Expected logits_q shape {expected_logits_shape}, got {tuple(result.logits_q.shape)}"
+    # logits_q has model vocab dim (may include extra special tokens beyond tokenizer.vocab_size)
+    assert result.logits_q.shape[0] == args.b and result.logits_q.shape[1] == args.k, (
+        f"Expected logits_q shape ({args.b}, {args.k}, V), got {tuple(result.logits_q.shape)}"
     )
     assert torch.isfinite(result.logits_q.float()).all(), "logits_q contains non-finite values"
 
