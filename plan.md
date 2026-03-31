@@ -150,12 +150,37 @@ python -O bench.py --qwen --size 4 --spec \
 下一步必须用同 tokenizer 的小 diffusion 模型（MDLM 0.5B），
 或者用更大的 target（32B）让 verify 时间成为瓶颈。
 
+### Phase 3 结果：MDLM 0.6B Diffusion Draft
+
+完成了以下适配：
+- 给 SSD 加了 Qwen2.5 model support（新文件 ssd/models/qwen2.py）
+- 适配 diffusion adapter 支持 MDLM（无 logits shift，标准 HF mask）
+- 从 tokenizer 自动检测 mask_token_id
+- 下载了 Qwen3 版本的 MDLM（dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1）
+
+| Target | Draft | k | dsteps | 吞吐 | 接受率 | 每步tok |
+|--------|-------|---|--------|------|--------|--------|
+| Qwen2.5-3B | MDLM-Coder-0.5B | 8 | 32 | 5.2 tok/s | 17% | 2.35 |
+| Qwen3-4B | MDLM-Qwen3-0.6B | 8 | 32 | 3.8 tok/s | 17% | 2.35 |
+| Qwen3-4B | MDLM-Qwen3-0.6B | 4 | 64 | 1.5 tok/s | 19% | 1.75 |
+
+**核心发现: 接受率恒定 ~17%，和模型匹配度、dsteps 无关**
+
+这意味着问题是**根本性的**：
+1. 扩散模型的 bidirectional 预测和 AR target 的 left-to-right 生成天然不一致
+2. 扩散模型对每个位置的预测是基于所有其他位置（包括右侧 mask），而 AR 只看左侧
+3. 更多 denoising steps 不帮助 — 扩散模型收敛到的分布本身就和 AR 不同
+4. 这不是模型大小或质量问题，是范式差异
+
+**可能的后续方向**：
+- 自投机解码（self-speculative）：用同一个扩散模型做 draft+verify
+- 训练一个专门为投机解码优化的扩散 draft（知识蒸馏从 AR target）
+- 用扩散模型的 logits 做 soft matching 而非 greedy matching
+
 ### 待做
-- [ ] 解决 MDLM tokenizer 兼容性（Qwen2.5 vs Qwen3 — SSD 只支持 Qwen3）
-- [ ] 或：把 SSD model runner 改成支持 Qwen2.5 target，配合 MDLM 0.5B
-- [ ] 或：用 dllm 框架把 Qwen3-0.6B 转成扩散模型
-- [ ] 跑 Phase 3 公平对比（同大小 AR vs Diffusion draft）
-- [ ] 接受率分析
+- [ ] 尝试 remasking=origin（随机采样而非 low_confidence）看接受率是否变化
+- [ ] 分析逐位置接受率
+- [ ] 写最终结果总结
 
 ---
 

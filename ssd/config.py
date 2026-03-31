@@ -1,7 +1,12 @@
 import os
+import sys
 from dataclasses import dataclass
 from transformers import AutoConfig
 import torch
+
+# Stub dllm if not properly installed (avoids circular import in MDLM model code)
+if "dllm" not in sys.modules:
+    sys.modules["dllm"] = type(sys)("dllm")
 from ssd.paths import DEFAULT_TARGET, DEFAULT_DRAFT
 from ssd.utils.misc import infer_model_family
 
@@ -74,18 +79,22 @@ class Config:
                     self.max_model_len, self.draft_hf_config.max_position_embeddings)
             if self.draft_backend == "llada_diffusion":
                 assert not self.draft_async, "llada_diffusion only supports synchronous speculation"
-                assert infer_model_family(self.model) == "qwen", (
+                assert infer_model_family(self.model) in ("qwen", "qwen2"), (
                     "llada_diffusion currently only supports Qwen targets"
                 )
                 assert self.diffusion_steps > 0, "diffusion_steps must be > 0"
                 assert self.diffusion_remasking == "low_confidence", (
                     "llada_diffusion v1 only supports low_confidence remasking"
                 )
-                # auto-detect mask_token_id from draft config
+                # auto-detect mask_token_id from draft config or tokenizer
                 if self.diffusion_mask_id < 0:
                     detected = getattr(self.draft_hf_config, "mask_token_id", None)
+                    if detected is None:
+                        from transformers import AutoTokenizer
+                        _tok = AutoTokenizer.from_pretrained(draft, trust_remote_code=True)
+                        detected = getattr(_tok, "mask_token_id", None)
                     assert detected is not None, (
-                        "diffusion_mask_id not set and draft config has no mask_token_id"
+                        "diffusion_mask_id not set and neither draft config nor tokenizer has mask_token_id"
                     )
                     self.diffusion_mask_id = detected
             if self.draft_async:

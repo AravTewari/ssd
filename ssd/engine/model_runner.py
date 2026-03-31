@@ -11,6 +11,7 @@ import flashinfer
 from ssd.config import Config
 from ssd.engine.sequence import Sequence
 from ssd.models.qwen3 import Qwen3ForCausalLM
+from ssd.models.qwen2 import Qwen2ForCausalLM
 from ssd.models.llama3 import LlamaForCausalLM
 from ssd.models.eagle3_draft_llama3 import Eagle3DraftForCausalLM
 from ssd.layers.sampler import Sampler
@@ -221,6 +222,8 @@ class ModelRunner:
             model_class = LlamaForCausalLM
         elif hf_config.model_type == 'qwen3':
             model_class = Qwen3ForCausalLM
+        elif hf_config.model_type == 'qwen2':
+            model_class = Qwen2ForCausalLM
         else:
             raise ValueError(f"Unsupported model type: {hf_config.model_type}")
 

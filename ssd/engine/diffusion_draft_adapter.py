@@ -4,7 +4,7 @@ from time import perf_counter
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModel, AutoModelForCausalLM, AutoModelForMaskedLM, AutoTokenizer
 
 from ssd.config import Config
 from ssd.engine.sequence import Sequence
@@ -23,18 +23,17 @@ class LLaDADiffusionAdapter:
         self.metrics = metrics
 
         dtype = getattr(config.draft_hf_config, "torch_dtype", None) or torch.bfloat16
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                config.draft,
-                trust_remote_code=True,
-                torch_dtype=dtype,
-            ).to(device).eval()
-        except (ValueError, KeyError):
-            self.model = AutoModel.from_pretrained(
-                config.draft,
-                trust_remote_code=True,
-                torch_dtype=dtype,
-            ).to(device).eval()
+        # Try loading in order: MaskedLM (MDLM) > CausalLM (Dream) > Model (fallback)
+        for auto_cls in (AutoModelForMaskedLM, AutoModelForCausalLM, AutoModel):
+            try:
+                self.model = auto_cls.from_pretrained(
+                    config.draft,
+                    trust_remote_code=True,
+                    torch_dtype=dtype,
+                ).to(device).eval()
+                break
+            except (ValueError, KeyError):
+                continue
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.draft,
             trust_remote_code=True,
@@ -44,6 +43,12 @@ class LLaDADiffusionAdapter:
         self.tokenizer.padding_side = "left"
 
         self._validate_compatibility(target_tokenizer)
+
+        # Detect model type to select correct forward/logits convention
+        model_type = getattr(config.draft_hf_config, "model_type", "").lower()
+        self._is_dream = "dream" in model_type
+        # Dream: positional args (x, attn_mask, tok_idx), needs logits shift
+        # MDLM/others: keyword args (input_ids=x, attention_mask=mask), no logits shift
 
     def _validate_compatibility(self, target_tokenizer: AutoTokenizer):
         # The critical check: tokenization must produce the same ids for normal text.
@@ -156,10 +161,13 @@ class LLaDADiffusionAdapter:
         for i in range(steps):
             mask_index = x == mask_id
 
-            logits = self.model(x, attn_mask, tok_idx).logits
-            # Dream predicts next-token; shift logits right by 1 so logits[i]
-            # corresponds to the prediction for position i.
-            logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+            if self._is_dream:
+                logits = self.model(x, attn_mask, tok_idx).logits
+                # Dream predicts next-token; shift logits right by 1
+                logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+            else:
+                # MDLM / standard HF: keyword args, predicts at-position (no shift)
+                logits = self.model(input_ids=x, attention_mask=full_attn_2d.long()).logits
             final_logits = logits
 
             t = timesteps[i]

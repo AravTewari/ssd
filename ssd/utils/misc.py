@@ -7,6 +7,8 @@ def infer_model_family(model_path: str) -> str:
         model_path_lower = model_path.lower()
         if "llama" in model_path_lower:
             return "llama"
+        elif "qwen2.5" in model_path_lower or "qwen2_5" in model_path_lower or "qwen-2.5" in model_path_lower:
+            return "qwen2"
         elif "qwen" in model_path_lower:
             return "qwen"
         elif "llada" in model_path_lower:
