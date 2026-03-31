@@ -106,13 +106,33 @@ python -O bench.py --qwen --size 4 --spec \
   - Dream 7B: 22 tok/s, 44ms/tok（dsteps=32, k=8）
 - [x] 发现 MDLM 0.5B 模型（`dllm-hub/Qwen2.5-Coder-0.5B-MDLM`）
 - [x] 代码推到 `XinyuJiangCMU/ssd` xinyu/diffusion-draft-fixes 分支
+- [x] 下载 Qwen3-4B + Qwen3-0.6B 完整权重
+- [x] Phase 1 + Phase 2 端到端 benchmark 完成
+
+### Phase 1 + 2 端到端结果（Qwen3-4B target, H200 单卡, random prompts）
+
+| 方案 | Draft | k | dsteps | 吞吐(tok/s) | 接受率 | 每步接受tok | draft耗时(ms) |
+|------|-------|---|--------|------------|--------|------------|-------------|
+| AR only | - | - | - | **239** | - | 1.0 | - |
+| AR spec | Qwen3-0.6B | 2 | - | 198 | 71% | 2.42 | ~7.5 |
+| AR spec | Qwen3-0.6B | 4 | - | 194 | 57% | 3.29 | ~12.1 |
+| AR spec | Qwen3-0.6B | 6 | - | 195 | 47% | 3.79 | ~14.4 |
+| AR spec | Qwen3-0.6B | 8 | - | 159 | 39% | 4.12 | ~20.6 |
+| Diff spec | Dream-7B | 4 | 32 | **5.4** | 43% | 2.70 | 492 |
+
+**关键发现**:
+1. 对 4B target，**纯 AR 最快**（239 tok/s），spec decode 反而更慢
+2. AR spec 接受率随 k 下降很快（71% → 39%）
+3. Dream-7B 完全不可行 — draft 太大（7B > target 4B），每步 492ms
+4. 扩散 draft 的接受率（43%@k=4）和 AR（57%@k=4）**差不多甚至更低**
+5. 验证了理论：4B target 太小，verify 很快（4.6ms），draft 开销占主导
+
+**结论**: 需要更大的 target（32B+）或更小的 diffusion draft 才能看到优势
 
 ### 待做
-- [ ] 下载 Qwen3-4B + Qwen3-0.6B 完整权重
-- [ ] 跑 Phase 1 AR 基线
-- [ ] 跑 Phase 2 Dream-7B 端到端
 - [ ] 解决 MDLM tokenizer 兼容性（Qwen2.5 vs Qwen3）
 - [ ] 跑 Phase 3 MDLM 0.5B 端到端
+- [ ] 用更大 target（Qwen3-8B 或 32B）重跑实验
 - [ ] 接受率分析
 
 ---
