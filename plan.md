@@ -177,10 +177,40 @@ python -O bench.py --qwen --size 4 --spec \
 - 训练一个专门为投机解码优化的扩散 draft（知识蒸馏从 AR target）
 - 用扩散模型的 logits 做 soft matching 而非 greedy matching
 
-### 待做
-- [ ] 尝试 remasking=origin（随机采样而非 low_confidence）看接受率是否变化
-- [ ] 分析逐位置接受率
-- [ ] 写最终结果总结
+---
+
+## 最终对比总结
+
+### Qwen3-4B Target, H200 单卡
+
+| 方案 | Draft 模型 | 参数量 | k | 吞吐(tok/s) | 接受率 | 每步tok | 比 AR-only |
+|------|-----------|--------|---|------------|--------|--------|-----------|
+| **AR only** | - | - | - | **239** | - | 1.0 | 1.00x |
+| AR spec | Qwen3-0.6B | 0.6B | 4 | **197** | 67% | 3.29 | 0.82x |
+| Diff spec | Dream-7B | 7.6B | 4 | 5.4 | 43% | 2.70 | 0.02x |
+| Diff spec | MDLM-Qwen3-0.6B | 0.6B | 8 | 3.8 | 17% | 2.35 | 0.02x |
+| Diff spec | MDLM-Qwen3-0.6B | 0.6B | 4 | 2.9 | 19% | 1.75 | 0.01x |
+
+### Qwen3-8B Target, H200 单卡
+
+| 方案 | Draft 模型 | k | 吞吐(tok/s) | 接受率 | 每步tok | 比 AR-only |
+|------|-----------|---|------------|--------|--------|-----------|
+| **AR only** | - | - | **173** | - | 1.0 | 1.00x |
+| AR spec | Qwen3-0.6B | 4 | **197** | 67% | 3.68 | 1.14x |
+| Diff spec | Dream-7B | 8 | 4.6 | 17% | 2.36 | 0.03x |
+
+### 结论
+
+1. **扩散 draft 在当前实现下不可行**：接受率恒定 ~17%，不受模型大小/质量/dsteps 影响
+2. **根本原因**：扩散模型（双向）和 AR target（单向）的生成分布天然不同
+3. **AR spec decode 在 8B target 上有效**：比纯 AR 快 14%（197 vs 173 tok/s）
+4. **对于更大 target（32B+）**，AR spec 的优势会更大，但扩散 draft 的接受率问题不会改善
+
+### 可能的后续方向
+- 自投机解码（self-speculative decoding）：避开 AR/扩散分布不匹配
+- 从 AR target 知识蒸馏扩散 draft，强制对齐分布
+- 修改 verifier 支持 soft/approximate matching
+- 在 token-level 之上做 semantic-level 验证
 
 ---
 
