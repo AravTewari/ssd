@@ -129,10 +129,32 @@ python -O bench.py --qwen --size 4 --spec \
 
 **结论**: 需要更大的 target（32B+）或更小的 diffusion draft 才能看到优势
 
+### Qwen3-8B target 结果（H200 单卡）
+
+| 方案 | Draft | k | dsteps | 吞吐(tok/s) | 接受率 | 每步tok | draft耗时(ms) | verify(ms) |
+|------|-------|---|--------|------------|--------|--------|-------------|-----------|
+| AR only | - | - | - | **173** | - | 1.0 | - | - |
+| AR spec | 0.6B | 2 | - | 189 | 80% | 2.60 | ~7.5 | 6.2 |
+| AR spec | 0.6B | 4 | - | **197** | 67% | 3.68 | ~12.1 | 6.3 |
+| AR spec | 0.6B | 6 | - | 192 | 58% | 4.46 | ~16.4 | 6.2 |
+| AR spec | 0.6B | 8 | - | 181 | 50% | 4.99 | ~20.7 | 6.2 |
+| Diff spec | Dream-7B | 8 | 32 | **4.6** | **17%** | 2.36 | 488 | 6.3 |
+
+**关键发现（8B target 新增）**:
+1. 8B target 上 AR spec **终于比 AR only 快了**（197 vs 173），k=4 是最优
+2. Dream-7B 更差了 — 接受率只有 **17%**！（4B 上是 43%）
+3. Dream 和 Qwen3 的 tokenizer 虽然兼容但模型能力不匹配，导致接受率极低
+4. verify 时间 6.2ms 还是太短，spec decode 优势不明显
+
+**总结**: Dream-7B 作为 diffusion draft 不可行。模型太大、接受率太低。
+下一步必须用同 tokenizer 的小 diffusion 模型（MDLM 0.5B），
+或者用更大的 target（32B）让 verify 时间成为瓶颈。
+
 ### 待做
-- [ ] 解决 MDLM tokenizer 兼容性（Qwen2.5 vs Qwen3）
-- [ ] 跑 Phase 3 MDLM 0.5B 端到端
-- [ ] 用更大 target（Qwen3-8B 或 32B）重跑实验
+- [ ] 解决 MDLM tokenizer 兼容性（Qwen2.5 vs Qwen3 — SSD 只支持 Qwen3）
+- [ ] 或：把 SSD model runner 改成支持 Qwen2.5 target，配合 MDLM 0.5B
+- [ ] 或：用 dllm 框架把 Qwen3-0.6B 转成扩散模型
+- [ ] 跑 Phase 3 公平对比（同大小 AR vs Diffusion draft）
 - [ ] 接受率分析
 
 ---
