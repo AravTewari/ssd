@@ -9,6 +9,7 @@ class SpeculateResult:
     speculations: torch.Tensor
     logits_q: torch.Tensor
     cache_hits: torch.Tensor | None = None
+    dflash_block_hidden: torch.Tensor | None = None
 
 
 @dataclass
@@ -16,6 +17,8 @@ class VerifyResult:
     new_suffixes: list[list[int]]
     recovery_tokens: list[int]
     eagle_acts: torch.Tensor | None = None  # Is this a tensor?
+    dflash_target_features: list[torch.Tensor] | None = None
+    dflash_target_features_full: torch.Tensor | None = None
 
 
 class SpeculatorBase(ABC):

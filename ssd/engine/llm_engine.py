@@ -10,8 +10,12 @@ from ssd.engine.model_runner import ModelRunner
 from ssd.engine.draft_runner import DraftRunner
 from ssd.engine.diffusion_draft_adapter import LLaDADiffusionAdapter
 from ssd.engine.dream_diffusion_adapter import DreamDiffusionAdapter
+from ssd.engine.dflash_worker import DFlashWorker, DFlashWorkerHandle
+from ssd.engine.dflash_ssd_runner import DFlashSSDRunner
 from ssd.engine.speculator_async import SpeculatorAsync
+from ssd.engine.speculator_async_dflash import SpeculatorAsyncDFlash
 from ssd.engine.speculator_sync import SpeculatorSync
+from ssd.engine.speculator_sync_dflash import SpeculatorSyncDFlash
 from ssd.engine.speculator_sync_diffusion import SpeculatorSyncDiffusion
 from ssd.engine.step import InferenceStep, AutoRegressiveStep, SpecDecodeStep
 from ssd.engine.verifier import Verifier
@@ -38,6 +42,8 @@ METRICS = {
     "target_step_times": [],
     "target_verify_times": [],
     "diffusion_draft_step_times": [],
+    "dflash_draft_step_times": [],
+    "dflash_predictor_times": [],
 }
 
 
@@ -64,10 +70,15 @@ class LLMEngine:
         self.events = []
 
         ctx = mp.get_context("spawn")
-        self.num_tp_gpus = config.num_gpus if not self.config.draft_async else config.num_gpus - 1
+        if config.speculate and config.draft_backend in {"dflash", "dflash_ssd"}:
+            self.num_tp_gpus = 1
+        else:
+            self.num_tp_gpus = config.num_gpus if not self.config.draft_async else config.num_gpus - 1
 
         if config.speculate and config.draft_async:
             self.draft_ps = None
+        if config.speculate and config.draft_backend in {"dflash", "dflash_ssd"}:
+            self.dflash_ps = None
 
         for i in range(1, self.num_tp_gpus):
             if self.config.verbose:
@@ -84,7 +95,22 @@ class LLMEngine:
             print(
                 f'config.speculate = {config.speculate} and config.draft_async = {config.draft_async} about to create draft runner', flush=True)
 
-        if config.speculate and config.draft_async:
+        if config.speculate and config.draft_backend == "dflash":
+            dflash_rank = config.num_gpus - 1
+            self.dflash_ps = ctx.Process(
+                target=DFlashWorker,
+                args=(config, dflash_rank),
+            )
+            self.dflash_ps.start()
+        elif config.speculate and config.draft_backend == "dflash_ssd":
+            dflash_rank = config.num_gpus - 1
+            self.draft_ps = ctx.Process(
+                target=DFlashSSDRunner,
+                args=(config, dflash_rank),
+            )
+            self.draft_ps.start()
+
+        if config.speculate and config.draft_async and config.draft_backend != "dflash_ssd":
             init_q = ctx.Queue()
             draft_rank = config.num_gpus - 1
             self.draft_ps = ctx.Process(
@@ -98,7 +124,7 @@ class LLMEngine:
             config, 0, self.events, is_draft=False, num_tp_gpus=self.num_tp_gpus)
 
         # do this after so we can launch model runner above so that the q is actually populated
-        if config.speculate and config.draft_async:
+        if config.speculate and config.draft_async and config.draft_backend != "dflash_ssd":
             try:
                 num_blocks = init_q.get(timeout=180)  # seconds
             except Exception as e:
@@ -111,17 +137,27 @@ class LLMEngine:
 
             self.prev_allocated_blocks = None
             self.prev_blocks_per_fork = None
+        elif config.speculate and config.draft_async and config.draft_backend == "dflash_ssd":
+            self.draft_cfg = config
 
         if config.speculate and not config.draft_async and config.draft_backend == "ar":
             # keep it colocated on rank 0, process/dist agnostic in this case
             self.draft_runner = DraftRunner(config)
             self.draft_cfg = self.draft_runner.draft_cfg
             print(f'Draft runner created on rank 0 (no async)', flush=True)
+        elif config.speculate and not config.draft_async and config.draft_backend == "dflash":
+            self.draft_cfg = config
         elif config.speculate and not config.draft_async and config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
             self.draft_cfg = config
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
+        if config.speculate and not config.draft_async and config.draft_backend == "dflash":
+            self.dflash_worker = DFlashWorkerHandle(
+                config=config,
+                device=torch.device("cuda:0") if torch.cuda.is_available() else config.device,
+                metrics=METRICS,
+            )
         if config.speculate and not config.draft_async and config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
             adapter_cls = LLaDADiffusionAdapter if config.draft_backend == "llada_diffusion" else DreamDiffusionAdapter
             self.diffusion_adapter = adapter_cls(
@@ -150,6 +186,11 @@ class LLMEngine:
                 self.model_runner.send_draft_exit_signal()
         except Exception:
             pass
+        try:
+            if self.config.speculate and self.config.draft_backend == "dflash":
+                self.dflash_worker.close()
+        except Exception:
+            pass
         # 2) Tell all target ranks (including rank 0 self) to exit (non-blocking cleanup, no os._exit inside)
         try:
             self.model_runner.call("exit",
@@ -173,6 +214,14 @@ class LLMEngine:
                 if self.draft_ps.is_alive():
                     self.draft_ps.terminate()
                     self.draft_ps.join(timeout=2)
+        except Exception:
+            pass
+        try:
+            if self.config.speculate and self.config.draft_backend == "dflash" and self.dflash_ps is not None:
+                self.dflash_ps.join(timeout=3)
+                if self.dflash_ps.is_alive():
+                    self.dflash_ps.terminate()
+                    self.dflash_ps.join(timeout=2)
         except Exception:
             pass
         # 5) Kill resource tracker so it doesn't print spurious warnings,
@@ -288,6 +337,24 @@ class LLMEngine:
                 else:
                     print(
                         f"[metrics] Avg Tokens per step on Cache Hit: N/A (no cache hits)", flush=True)
+                if self.config.draft_backend == "dflash_ssd" and METRICS["dflash_draft_step_times"]:
+                    avg_dflash_step_ms = (
+                        sum(METRICS["dflash_draft_step_times"]) * 1000 /
+                        len(METRICS["dflash_draft_step_times"])
+                    )
+                    print(
+                        f"[metrics] Avg DFlash draft step time (ms): {avg_dflash_step_ms:.2f}",
+                        flush=True,
+                    )
+                    if METRICS["dflash_predictor_times"]:
+                        avg_predictor_ms = (
+                            sum(METRICS["dflash_predictor_times"]) * 1000 /
+                            len(METRICS["dflash_predictor_times"])
+                        )
+                        print(
+                            f"[metrics] Avg DFlash predictor time (ms): {avg_predictor_ms:.2f}",
+                            flush=True,
+                        )
             elif self.config.draft_backend in {"llada_diffusion", "dream_diffusion"} and METRICS["diffusion_draft_step_times"]:
                 avg_diffusion_step_ms = (
                     sum(METRICS["diffusion_draft_step_times"]) * 1000 /
@@ -297,30 +364,67 @@ class LLMEngine:
                     f"[metrics] Avg diffusion draft step time (ms): {avg_diffusion_step_ms:.2f}",
                     flush=True,
                 )
+            elif self.config.draft_backend in {"dflash", "dflash_ssd"} and METRICS["dflash_draft_step_times"]:
+                avg_dflash_step_ms = (
+                    sum(METRICS["dflash_draft_step_times"]) * 1000 /
+                    len(METRICS["dflash_draft_step_times"])
+                )
+                print(
+                    f"[metrics] Avg DFlash draft step time (ms): {avg_dflash_step_ms:.2f}",
+                    flush=True,
+                )
+                if METRICS["dflash_predictor_times"]:
+                    avg_predictor_ms = (
+                        sum(METRICS["dflash_predictor_times"]) * 1000 /
+                        len(METRICS["dflash_predictor_times"])
+                    )
+                    print(
+                        f"[metrics] Avg DFlash predictor time (ms): {avg_predictor_ms:.2f}",
+                        flush=True,
+                    )
 
     def create_inference_step(self, config: Config) -> InferenceStep:
         if config.speculate:
             if config.draft_async:
-                speculator = SpeculatorAsync(
-                    lookahead=config.speculate_k,
-                    device=config.device,
-                    async_fan_out=config.async_fan_out,
-                    max_blocks=config.max_blocks,
-                    vocab_size=config.draft_hf_config.vocab_size,
-                    draft_dtype=config.draft_hf_config.torch_dtype,
-                    kvcache_block_size=config.kvcache_block_size,
-                    max_model_len=config.max_model_len,
-                    async_pg=self.model_runner.async_pg,
-                    draft_runner_rank=self.num_tp_gpus,
-                    tokenizer=self.tokenizer,
-                    verbose=config.verbose,
-                )
+                if config.draft_backend == "dflash_ssd":
+                    speculator = SpeculatorAsyncDFlash(
+                        lookahead=config.speculate_k,
+                        device=config.device,
+                        vocab_size=config.hf_config.vocab_size,
+                        draft_dtype=config.draft_hf_config.torch_dtype,
+                        feature_dim=config.dflash_target_feature_dim,
+                        async_pg=self.model_runner.async_pg,
+                        draft_runner_rank=self.num_tp_gpus,
+                        verbose=config.verbose,
+                        metrics=METRICS,
+                    )
+                else:
+                    speculator = SpeculatorAsync(
+                        lookahead=config.speculate_k,
+                        device=config.device,
+                        async_fan_out=config.async_fan_out,
+                        max_blocks=config.max_blocks,
+                        vocab_size=config.draft_hf_config.vocab_size,
+                        draft_dtype=config.draft_hf_config.torch_dtype,
+                        kvcache_block_size=config.kvcache_block_size,
+                        max_model_len=config.max_model_len,
+                        async_pg=self.model_runner.async_pg,
+                        draft_runner_rank=self.num_tp_gpus,
+                        tokenizer=self.tokenizer,
+                        verbose=config.verbose,
+                    )
             else:
                 if config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
                     speculator = SpeculatorSyncDiffusion(
                         lookahead=config.speculate_k,
                         device=config.device,
                         diffusion_adapter=self.diffusion_adapter,
+                    )
+                elif config.draft_backend == "dflash":
+                    speculator = SpeculatorSyncDFlash(
+                        lookahead=config.speculate_k,
+                        device=config.device,
+                        dflash_worker=self.dflash_worker,
                     )
                 else:
                     speculator = SpeculatorSync(
@@ -344,6 +448,7 @@ class LLMEngine:
                 speculator=speculator,
                 verifier=verifier,
                 eagle=config.use_eagle,
+                dflash=config.draft_backend in {"dflash", "dflash_ssd"},
                 tokenizer=self.tokenizer,
                 async_spec=config.draft_async,
             )
@@ -363,6 +468,8 @@ class LLMEngine:
     ) -> list[str]:
         for k in METRICS:
             METRICS[k] = [] if isinstance(METRICS[k], list) else 0
+        if self.config.speculate and self.config.draft_backend == "dflash":
+            self.dflash_worker.reset_all()
 
         if use_tqdm:
             pbar = tqdm(total=len(prompts),
@@ -383,7 +490,6 @@ class LLMEngine:
                     f" of {max_steps}" if max_steps != float('inf') else "",
                     flush=True,
                 )
-            i += 1
             t = perf_counter()
             output = self.step(inference_step)
             time_taken = perf_counter() - t
@@ -405,6 +511,9 @@ class LLMEngine:
                 outputs[seq_id] = token_ids
                 if use_tqdm:
                     pbar.update(1)
+            i += 1
+        if self.config.speculate and self.config.draft_backend == "dflash":
+            self.dflash_worker.reset_all()
         outputs = [outputs[seq_id] for seq_id in sorted(outputs)]
         outputs = [{"text": self.tokenizer.decode(
             token_ids), "token_ids": token_ids} for token_ids in outputs]

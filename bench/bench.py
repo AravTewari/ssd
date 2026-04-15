@@ -23,8 +23,10 @@ def parse_arguments():
     parser.add_argument("--qwen", action="store_true", help="Use Qwen models instead of Llama")
     parser.add_argument("--draft", type=str, default=None,
                         help="Draft model size (0.6 for Qwen-0.6B, 1 for Llama-1B) or path to draft model")
-    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion", "dream_diffusion"], default="ar",
+    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd"], default="ar",
                         help="Draft backend implementation to use")
+    parser.add_argument("--dflash-predictor", type=str, default=None,
+                        help="Predictor checkpoint directory for dflash_ssd")
 
     # Execution configuration
     parser.add_argument("--eager", action="store_true", help="Use eager execution (disable CUDA graphs)")
@@ -94,6 +96,16 @@ def parse_arguments():
         assert args.temp == 0.0 and args.dtemp in (None, 0, 0.0), (
             f"--draft-backend {args.draft_backend} only supports greedy decoding"
         )
+    if args.draft_backend == "dflash":
+        assert args.spec, "--draft-backend dflash requires --spec"
+        assert args.qwen and args.size == "8", "dflash currently only supports Qwen3-8B targets"
+        assert args.gpus == 2, "dflash currently requires --gpus 2"
+    if args.draft_backend == "dflash_ssd":
+        assert args.spec, "--draft-backend dflash_ssd requires --spec"
+        assert getattr(args, "async", False), "--draft-backend dflash_ssd requires --async"
+        assert args.qwen and args.size == "8", "dflash_ssd currently only supports Qwen3-8B targets"
+        assert args.gpus == 2, "dflash_ssd currently requires --gpus 2"
+        assert args.dflash_predictor is not None, "--draft-backend dflash_ssd requires --dflash-predictor"
     return args
 
 
@@ -122,8 +134,9 @@ def create_run_name(args):
     k_str = f"_k{args.k}"
     f_str = f"_f{args.f}"
     dsteps_str = f"_dsteps{args.dsteps}" if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else ""
+    predictor_str = "_pred" if args.draft_backend == "dflash_ssd" else ""
 
-    return args.name if args.name else f"{model_type}_size{args.size}_{spec_mode_str}{async_mode_str}{jit_mode_str}{backend_str}_b{args.b}{k_str}{f_str}{dsteps_str}{draft_str}{temp_str}{sampler_x_str}{example_str}{humaneval_str}{alpaca_str}{c4_str}{ultrafeedback_str}{random_str}{all_str}{gsm_str}"
+    return args.name if args.name else f"{model_type}_size{args.size}_{spec_mode_str}{async_mode_str}{jit_mode_str}{backend_str}{predictor_str}_b{args.b}{k_str}{f_str}{dsteps_str}{draft_str}{temp_str}{sampler_x_str}{example_str}{humaneval_str}{alpaca_str}{c4_str}{ultrafeedback_str}{random_str}{all_str}{gsm_str}"
 
 
 def initialize_wandb(args, run_name):
@@ -152,6 +165,7 @@ def initialize_wandb(args, run_name):
             "numseqs": args.numseqs,
             "draft_model": args.draft,
             "draft_backend": args.draft_backend,
+            "dflash_predictor": args.dflash_predictor,
             "diffusion_steps": args.dsteps if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else None,
             "b": args.b,
             "block_size": args.block_sz,
@@ -189,6 +203,7 @@ def create_llm_kwargs(args, draft_path):
         max_steps=args.max_steps,
         draft_backend=args.draft_backend,
         diffusion_steps=args.dsteps,
+        dflash_predictor=args.dflash_predictor,
     )
 
     if args.flh is not None:
@@ -229,6 +244,14 @@ def log_wandb_metrics(args, metrics, total_tokens, total_time, throughput, model
         if "diffusion_draft_step_times" in metrics and metrics["diffusion_draft_step_times"]:
             wandb_metrics["metrics_avg_diffusion_draft_step_time_ms"] = (
                 sum(metrics["diffusion_draft_step_times"]) * 1000 / len(metrics["diffusion_draft_step_times"])
+            )
+        if "dflash_draft_step_times" in metrics and metrics["dflash_draft_step_times"]:
+            wandb_metrics["metrics_avg_dflash_draft_step_time_ms"] = (
+                sum(metrics["dflash_draft_step_times"]) * 1000 / len(metrics["dflash_draft_step_times"])
+            )
+        if "dflash_predictor_times" in metrics and metrics["dflash_predictor_times"]:
+            wandb_metrics["metrics_avg_dflash_predictor_time_ms"] = (
+                sum(metrics["dflash_predictor_times"]) * 1000 / len(metrics["dflash_predictor_times"])
             )
 
         if "cache_hits" in metrics and metrics["cache_hits"]:
@@ -338,6 +361,10 @@ def main():
         llm_kwargs['debug_mode'] = True
 
     llm = LLM(model_path, **llm_kwargs)
+    if args.draft_backend in {"dflash", "dflash_ssd"}:
+        args.k = llm.config.speculate_k
+        args.eager = llm.config.enforce_eager
+        args.block_sz = llm.config.kvcache_block_size
 
     sweep_results = []
     for si, sweep_cfg in enumerate(sweep_configs):
@@ -406,6 +433,14 @@ def main():
                     sum(metrics["diffusion_draft_step_times"]) * 1000 / len(metrics["diffusion_draft_step_times"])
                     if metrics.get("diffusion_draft_step_times") else None
                 ),
+                "dflash_draft_ms": (
+                    sum(metrics["dflash_draft_step_times"]) * 1000 / len(metrics["dflash_draft_step_times"])
+                    if metrics.get("dflash_draft_step_times") else None
+                ),
+                "dflash_predictor_ms": (
+                    sum(metrics["dflash_predictor_times"]) * 1000 / len(metrics["dflash_predictor_times"])
+                    if metrics.get("dflash_predictor_times") else None
+                ),
             })
 
             if not args.random and si == 0:
@@ -450,6 +485,10 @@ def main():
             print(f"Accepted suffix mean (incl recovery): {best['accepted_suffix']:.2f}")
         if best["diffusion_draft_ms"] is not None:
             print(f"Mean diffusion draft step time: {best['diffusion_draft_ms']:.2f}ms")
+        if best["dflash_draft_ms"] is not None:
+            print(f"Mean DFlash draft step time: {best['dflash_draft_ms']:.2f}ms")
+        if best["dflash_predictor_ms"] is not None:
+            print(f"Mean DFlash predictor time: {best['dflash_predictor_ms']:.2f}ms")
 
     print(f'Engine exited!')
     sys.exit(0)

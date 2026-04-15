@@ -596,6 +596,12 @@ class ModelRunner:
         is_tree_decode = self.is_draft and self.config.draft_async and tree_decode_step >= 0
         is_mq_kp1 = self.config.speculate and not last_only
         spec_and_dec = not is_prefill and self.config.speculate
+        use_dflash = (
+            self.config.speculate
+            and self.config.draft_backend in {"dflash", "dflash_ssd"}
+            and not self.is_draft
+            and self.hf_config.model_type == "qwen3"
+        )
 
         assert not (is_prefill and not last_only), "ERROR in run_model: is_prefill and not last_only"
         
@@ -614,6 +620,14 @@ class ModelRunner:
                     outputs, eagle_acts = self.model(input_ids, positions) # target fwd when eagle enabled hooks into activations for eagle conditioning
                     logits = self.model.compute_logits(outputs, last_only)
                     return logits, eagle_acts  # return eagle_acts as conditioning vector for draft
+            elif use_dflash:
+                outputs, dflash_target_features = self.model(
+                    input_ids,
+                    positions,
+                    dflash_layer_ids=self.config.dflash_target_layer_ids,
+                )
+                logits = self.model.compute_logits(outputs, last_only)
+                return logits, dflash_target_features
             else: 
                 outputs = self.model(input_ids, positions)
                 logits = self.model.compute_logits(outputs, last_only)
@@ -656,8 +670,12 @@ class ModelRunner:
 
         # Handle EAGLE returning (logits, conditioning_vector for next iter)
         conditioning = None
+        dflash_target_features = None
         if self.config.use_eagle:
             logits, conditioning = self.run_model(
+                input_ids, positions, is_prefill, last_only, hidden_states=hidden_states)
+        elif self.config.speculate and self.config.draft_backend in {"dflash", "dflash_ssd"} and not self.is_draft:
+            logits, dflash_target_features = self.run_model(
                 input_ids, positions, is_prefill, last_only, hidden_states=hidden_states)
         else:
             logits = self.run_model(input_ids, positions, is_prefill, last_only, hidden_states=hidden_states)
@@ -672,10 +690,14 @@ class ModelRunner:
             reset_context()
             if conditioning is not None:
                 return token_ids, conditioning
+            if dflash_target_features is not None:
+                return token_ids, dflash_target_features
             return (token_ids, logits) if draft_return_logits else token_ids
         else:
             reset_context()
             if conditioning is not None:
                 return logits, conditioning
+            if dflash_target_features is not None:
+                return logits, dflash_target_features
             return logits
     

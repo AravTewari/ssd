@@ -40,6 +40,14 @@ DEFAULT_DREAM_DRAFT = os.environ.get(
     "SSD_DREAM_DRAFT_MODEL",
     f"{HF_CACHE_DIR}/models--Dream-org--Dream-v0-Instruct-7B",
 )
+DEFAULT_DFLASH_DRAFT = os.environ.get(
+    "SSD_DFLASH_DRAFT_MODEL",
+    f"{HF_CACHE_DIR}/models--z-lab--Qwen3-8B-DFlash-b16",
+)
+DEFAULT_DFLASH_PREDICTOR = os.environ.get(
+    "SSD_DFLASH_PREDICTOR",
+    f"{HF_CACHE_DIR}/dflash-predictors/qwen3-8b-dflash-b16",
+)
 
 # eagle3 draft model paths. override via env vars if your models live elsewhere.
 EAGLE3_SPECFORGE_70B = os.environ.get(

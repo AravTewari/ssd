@@ -31,10 +31,16 @@ class Verifier(VerifierBase):
 
     def prefill(self, seqs: list[Sequence], eagle: bool = False) -> VerifyResult:
         result = self.target_model_runner.call("run", seqs, True)
+        dflash = self.target_model_runner.config.draft_backend in {"dflash", "dflash_ssd"}
         if eagle:
             token_ids, eagle_acts = result
+            dflash_target_features = None
+        elif dflash:
+            token_ids, dflash_features_flat = result
+            dflash_target_features = []
         else:
             token_ids = result
+            dflash_target_features = None
 
         offset = 0
         for seq, token_id in zip(seqs, token_ids):
@@ -44,11 +50,17 @@ class Verifier(VerifierBase):
                 # this doesn't move acts onto cpu does it? 
                 seq.last_target_hidden_state = eagle_acts[offset + seq_len - 1].clone()
                 offset += seq_len
+            elif dflash:
+                seq_len = seq.num_prompt_tokens
+                dflash_target_features.append(dflash_features_flat[offset:offset + seq_len].clone())
+                offset += seq_len
 
         return VerifyResult(
             [], # no accepted tokens for prefill, just recovery tokens (first sampled token).
             [seq.recovery_token_id for seq in seqs],
             eagle_acts if eagle else None,
+            dflash_target_features=dflash_target_features,
+            dflash_target_features_full=None,
         )
 
     def verify(self, seqs: list[Sequence], speculate_result: SpeculateResult, eagle: bool = False) -> VerifyResult:
@@ -73,10 +85,15 @@ class Verifier(VerifierBase):
             _vt_call = perf_counter()
             print(f"[PROFILE verifier] target_call={(_vt_call-_tv0)*1000:.2f}ms eagle={eagle} bs={batch_size}", flush=True)
 
+        dflash = self.target_model_runner.config.draft_backend in {"dflash", "dflash_ssd"}
         if eagle:
             logits_p_flat, eagle_acts_flat = result
+            dflash_features_flat = None
+        elif dflash:
+            logits_p_flat, dflash_features_flat = result
         else:
             logits_p_flat = result
+            dflash_features_flat = None
 
         for s in seqs:
             s.num_cached_tokens += self.lookahead + 1
@@ -145,9 +162,21 @@ class Verifier(VerifierBase):
         eagle_acts = None
         if eagle:
             eagle_acts = eagle_acts_flat.view(batch_size, self.lookahead + 1, -1)
+
+        dflash_target_features = None
+        dflash_target_features_full = None
+        if dflash and dflash_features_flat is not None:
+            dflash_features = dflash_features_flat.view(batch_size, self.lookahead + 1, -1)
+            dflash_target_features_full = dflash_features.clone()
+            dflash_target_features = [
+                dflash_features[i, :len(new_suffix)].clone()
+                for i, new_suffix in enumerate(new_suffixes)
+            ]
         
         return VerifyResult(
             new_suffixes=new_suffixes,
             recovery_tokens=recovery_tokens,
             eagle_acts=eagle_acts,
+            dflash_target_features=dflash_target_features,
+            dflash_target_features_full=dflash_target_features_full,
         )
