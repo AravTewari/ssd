@@ -10,6 +10,7 @@ from ssd.engine.model_runner import ModelRunner
 from ssd.engine.draft_runner import DraftRunner
 from ssd.engine.diffusion_draft_adapter import LLaDADiffusionAdapter
 from ssd.engine.dream_diffusion_adapter import DreamDiffusionAdapter
+from DFlash.dflash_adapter import DFlashDraftAdapter
 from ssd.engine.speculator_async import SpeculatorAsync
 from ssd.engine.speculator_sync import SpeculatorSync
 from ssd.engine.speculator_sync_diffusion import SpeculatorSyncDiffusion
@@ -38,6 +39,7 @@ METRICS = {
     "target_step_times": [],
     "target_verify_times": [],
     "diffusion_draft_step_times": [],
+    "dflash_draft_step_times": [],
 }
 
 
@@ -117,7 +119,7 @@ class LLMEngine:
             self.draft_runner = DraftRunner(config)
             self.draft_cfg = self.draft_runner.draft_cfg
             print(f'Draft runner created on rank 0 (no async)', flush=True)
-        elif config.speculate and not config.draft_async and config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+        elif config.speculate and not config.draft_async and config.draft_backend in {"llada_diffusion", "dream_diffusion", "dflash"}:
             self.draft_cfg = config
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
@@ -128,6 +130,21 @@ class LLMEngine:
                 config=config,
                 target_tokenizer=self.tokenizer,
                 device=torch.device("cuda:0") if torch.cuda.is_available() else config.device,
+                metrics=METRICS,
+            )
+        elif config.speculate and not config.draft_async and config.draft_backend == "dflash":
+            # With multi-GPU TP, GPU 0 is full (whole target sharded across GPUs).
+            # Load the DFlash adapter's HF target copy on the last GPU to avoid OOM.
+            if torch.cuda.is_available() and config.num_gpus > 1:
+                device = torch.device(f"cuda:{config.num_gpus - 1}")
+            elif torch.cuda.is_available():
+                device = torch.device("cuda:0")
+            else:
+                device = config.device
+            self.diffusion_adapter = DFlashDraftAdapter(
+                config=config,
+                target_tokenizer=self.tokenizer,
+                device=device,
                 metrics=METRICS,
             )
         self.scheduler = Scheduler(config, draft_cfg=self.draft_cfg if config.speculate else None)
@@ -199,7 +216,7 @@ class LLMEngine:
             os._exit(0)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
-        if self.config.speculate and self.config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+        if self.config.speculate and self.config.draft_backend in {"llada_diffusion", "dream_diffusion", "dflash"}:
             if sampling_params.temperature != 0:
                 raise ValueError(f"{self.config.draft_backend} only supports greedy decoding (temperature=0)")
             if sampling_params.draft_temperature not in (None, 0, 0.0):
@@ -297,6 +314,15 @@ class LLMEngine:
                     f"[metrics] Avg diffusion draft step time (ms): {avg_diffusion_step_ms:.2f}",
                     flush=True,
                 )
+            elif self.config.draft_backend == "dflash" and METRICS["dflash_draft_step_times"]:
+                avg_dflash_ms = (
+                    sum(METRICS["dflash_draft_step_times"]) * 1000 /
+                    len(METRICS["dflash_draft_step_times"])
+                )
+                print(
+                    f"[metrics] Avg DFlash draft step time (ms): {avg_dflash_ms:.2f}",
+                    flush=True,
+                )
 
     def create_inference_step(self, config: Config) -> InferenceStep:
         if config.speculate:
@@ -316,7 +342,7 @@ class LLMEngine:
                     verbose=config.verbose,
                 )
             else:
-                if config.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+                if config.draft_backend in {"llada_diffusion", "dream_diffusion", "dflash"}:
                     speculator = SpeculatorSyncDiffusion(
                         lookahead=config.speculate_k,
                         device=config.device,

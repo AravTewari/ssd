@@ -73,10 +73,10 @@ class Config:
         assert os.path.isdir(model)
 
         assert 1 <= self.num_gpus <= 8 # this codebase only works on one node 
-        assert self.draft_backend in {"ar", "llada_diffusion", "dream_diffusion"}, (
+        assert self.draft_backend in {"ar", "llada_diffusion", "dream_diffusion", "dflash"}, (
             f"Unsupported draft_backend={self.draft_backend}"
         )
-        if self.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+        if self.draft_backend in {"llada_diffusion", "dream_diffusion", "dflash"}:
             assert self.speculate, f"{self.draft_backend} requires speculate=True"
         self.hf_config = AutoConfig.from_pretrained(model)
         self.max_model_len = min(
@@ -110,6 +110,17 @@ class Config:
                     "origin", "maskgit_plus", "topk_margin", "entropy",
                 }, (
                     "dream_diffusion supports remasking modes: origin, maskgit_plus, topk_margin, entropy"
+                )
+            elif self.draft_backend == "dflash":
+                assert not self.draft_async, "dflash only supports synchronous speculation"
+                assert infer_model_family(self.model) == "qwen", (
+                    "dflash currently only supports Qwen targets"
+                )
+                from pathlib import Path
+                dflash_cfg = Path(draft) / "dflash_config.json"
+                assert dflash_cfg.exists(), (
+                    f"dflash requires a trained checkpoint at --draft with dflash_config.json. "
+                    f"Not found at: {dflash_cfg}"
                 )
             if self.draft_async:
                 if self.fan_out_list is None: 

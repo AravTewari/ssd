@@ -135,16 +135,24 @@ def get_model_paths(args, cache_dir: str = HF_CACHE_DIR) -> Tuple[str, str, Opti
     model_path = _get_snapshot_path(model_base)
 
     # Always resolve a draft path so callers can pass it through unchanged
-    if getattr(args, "draft_backend", "ar") == "llada_diffusion":
+    if getattr(args, "draft_backend", "ar") == "dflash":
+        # DFlash checkpoint dir contains dflash_config.json (not config.json)
+        assert getattr(args, "draft", None) and os.path.isdir(args.draft), (
+            "--draft must be a path to a DFlash checkpoint directory for --draft-backend dflash"
+        )
+        draft_path = args.draft
+    elif getattr(args, "draft_backend", "ar") == "llada_diffusion":
         draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_LLADA_DRAFT
+        draft_path = _get_snapshot_path(draft_base)
     elif getattr(args, "draft_backend", "ar") == "dream_diffusion":
         draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_DREAM_DRAFT
+        draft_path = _get_snapshot_path(draft_base)
     elif getattr(args, "eagle", False) or getattr(args, "draft", None):
         draft_base = _get_draft_model_path(args, cache_dir)
+        draft_path = _get_snapshot_path(draft_base)
     else:
         draft_base = default_draft_base
-         
-    draft_path = _get_snapshot_path(draft_base)
+        draft_path = _get_snapshot_path(draft_base)
 
     return model_name, model_path, draft_path
 

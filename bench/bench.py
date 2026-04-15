@@ -23,7 +23,7 @@ def parse_arguments():
     parser.add_argument("--qwen", action="store_true", help="Use Qwen models instead of Llama")
     parser.add_argument("--draft", type=str, default=None,
                         help="Draft model size (0.6 for Qwen-0.6B, 1 for Llama-1B) or path to draft model")
-    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion", "dream_diffusion"], default="ar",
+    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion", "dream_diffusion", "dflash"], default="ar",
                         help="Draft backend implementation to use")
 
     # Execution configuration
@@ -88,7 +88,7 @@ def parse_arguments():
         assert args.llama, "Eagle currently only supports llama models"
         assert args.temp == 0.0 and args.dtemp is None, "Eagle currently only supports greedy decoding (temp=0)"
         assert getattr(args, 'async', False), "Eagle currently only supports async speculative decoding"
-    if args.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+    if args.draft_backend in {"llada_diffusion", "dream_diffusion", "dflash"}:
         assert args.spec, f"--draft-backend {args.draft_backend} requires --spec"
         assert not getattr(args, "async", False), f"--draft-backend {args.draft_backend} does not support --async"
         assert args.temp == 0.0 and args.dtemp in (None, 0, 0.0), (
