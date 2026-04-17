@@ -175,9 +175,18 @@ def load_dataset_token_ids(
 
     dataset_file_path = DATASET_PATHS[dataset_name]
     if not os.path.exists(dataset_file_path):
-        print(
-            f"Warning: Dataset file not found at {dataset_file_path}, falling back to random tokens")
-        return None
+        # Try processed_datasets/ subdirectory
+        alt_path = dataset_file_path.replace(
+            os.environ.get("SSD_DATASET_DIR", ""),
+            os.environ.get("SSD_DATASET_DIR", "") + "/processed_datasets",
+            1,
+        )
+        if os.path.exists(alt_path):
+            dataset_file_path = alt_path
+        else:
+            print(
+                f"Warning: Dataset file not found at {dataset_file_path}, falling back to random tokens")
+            return None
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_path)

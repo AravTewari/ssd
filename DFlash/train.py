@@ -152,17 +152,13 @@ def build_dataloader(
 
 def build_mask_schedule(block_size: int, seq_len: int) -> tuple[int, int]:
     """
-    Sample a random block start position within the sequence (not at position 0
-    so the draft always has some context).
+    Place the masked block at the END of the sequence, matching the inference
+    setting where the draft always predicts the next block_size tokens after
+    the existing context.
     Returns (block_start, block_end) indices into the sequence.
     """
-    lo = max(1, seq_len // 4)          # ensure at least 25% context
-    hi = seq_len - block_size - 1      # ensure at least 1 token after block
-    if lo >= hi:
-        lo = 1
-        hi = max(2, seq_len - block_size - 1)
-    block_start = random.randint(lo, max(lo, hi))
-    return block_start, block_start + block_size
+    block_start = seq_len - block_size
+    return block_start, seq_len
 
 
 @torch.no_grad()
@@ -276,7 +272,7 @@ def parse_args():
 
     # Loss weights
     p.add_argument("--alpha_ce", type=float, default=1.0, help="CE loss weight")
-    p.add_argument("--alpha_kl", type=float, default=1.0, help="KL distillation weight")
+    p.add_argument("--alpha_kl", type=float, default=0.0, help="KL distillation weight (0 = CE only)")
     p.add_argument("--kl_temperature", type=float, default=1.0)
 
     # Logging / saving
@@ -487,23 +483,28 @@ def main():
             # Ground truth tokens for this block
             block_ids = input_ids[:, block_start:block_end].clone()  # [B, block_size]
 
-            # Build masked input: replace block with MASK token
-            masked_ids = input_ids.clone()
-            masked_ids[:, block_start:block_end] = args.mask_token_id
-
-            # Run frozen target on masked sequence
+            # Run frozen target on the clean context only (positions 0..block_start-1).
+            # This matches inference: target sees the unmasked prefix, draft predicts what follows.
+            ctx_ids = input_ids[:, :block_start]  # [B, block_start]
             with torch.no_grad():
                 target_features, target_logits = run_target(
-                    target, masked_ids, draft_inner.target_layer_ids
+                    target, ctx_ids, draft_inner.target_layer_ids
                 )
-                # Context features: everything BEFORE the block (positions 0..block_start-1).
-                # This is what the draft conditions on — the unmasked prefix.
-                ctx_target_feats    = target_features[:, :block_start, :]            # [B, block_start, n*H]
-                block_target_logits = target_logits[:, block_start:block_end, :]     # [B, bs, V]
+                # Context features: all positions (the full context up to block_start).
+                ctx_target_feats    = target_features                                # [B, block_start, n*H]
+                # Teacher soft logits: target logit at position (block_start - 1) predicts
+                # the token at block_start. For simplicity we replicate this single-step
+                # logit for all block positions as an approximation.
+                # (Exact per-position teacher logits would require autoregressive target calls.)
+                next_tok_logit = target_logits[:, -1:, :]                           # [B, 1, V]
+                block_target_logits = next_tok_logit.expand(-1, block_size, -1)     # [B, bs, V]
 
-            # Embed masked block tokens (MASK embeddings)
+            # Embed MASK tokens as noise embeddings for the draft block
+            mask_block_ids = torch.full(
+                (B, args.block_size), args.mask_token_id, dtype=torch.long, device=device
+            )
             with torch.no_grad():
-                noise_emb = target.model.embed_tokens(masked_ids[:, block_start:block_end])  # [B, bs, H]
+                noise_emb = target.model.embed_tokens(mask_block_ids)  # [B, bs, H]
 
             # Position ids: [0..block_end-1] covering ctx (0..block_start-1) then block
             # The model splits this into ctx_positions and block_positions internally.

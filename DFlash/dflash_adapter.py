@@ -119,11 +119,15 @@ class DFlashDraftAdapter:
         print("[DFlashDraftAdapter] Loading frozen HF target for hidden-state extraction …")
         num_gpus = getattr(config, "num_gpus", 1)
         if num_gpus > 1:
+            # Spread across all num_gpus GPUs. Query actual free memory and leave
+            # 1 GB headroom. Exclude CPU offload so we never land on meta device.
             max_mem = {}
             for i in range(num_gpus):
-                free = torch.cuda.mem_get_info(i)[0] // (1024 ** 2)
-                # leave 2 GB headroom, use the rest for the HF target
-                max_mem[i] = f"{max(0, free - 2048)}MiB"
+                free_bytes = torch.cuda.mem_get_info(i)[0]
+                free_mib = free_bytes // (1024 ** 2)
+                max_mem[i] = f"{max(0, free_mib - 1024)}MiB"
+            max_mem["cpu"] = "0GiB"  # disable CPU offload to avoid meta tensors
+            print(f"[DFlashDraftAdapter] max_memory per device: {max_mem}")
             self.hf_target = AutoModelForCausalLM.from_pretrained(
                 config.model,
                 torch_dtype=dtype,
@@ -189,43 +193,36 @@ class DFlashDraftAdapter:
         # Build attention mask (1 for real tokens, 0 for pad)
         attention_mask = (input_ids != pad_id).long()
 
-        # Build the masked block: append `lookahead` MASK tokens to each sequence
-        mask_block = torch.full(
-            (B, lookahead), self.mask_token_id, dtype=torch.long, device=self.device
-        )
-        full_ids = torch.cat([input_ids, mask_block], dim=1)  # [B, T + lookahead]
-        full_mask = torch.cat(
-            [attention_mask, torch.ones(B, lookahead, device=self.device, dtype=torch.long)],
-            dim=1,
-        )
-        T = full_ids.shape[1]
-        block_start = input_ids.shape[1]
+        ctx_len = input_ids.shape[1]
+        T = ctx_len + lookahead
 
-        # Run HF target to get hidden states (no kv-cache, full context).
-        # When hf_target uses device_map="auto" its embed layer is on its first device.
+        # Run HF target on the clean context only (no MASK tokens appended).
+        # This matches training: target sees the unmasked prefix, draft predicts what follows.
         hf_first_device = next(self.hf_target.parameters()).device
         target_out = self.hf_target(
-            input_ids=full_ids.to(hf_first_device),
-            attention_mask=full_mask.to(hf_first_device),
+            input_ids=input_ids.to(hf_first_device),
+            attention_mask=attention_mask.to(hf_first_device),
             use_cache=False,
             output_hidden_states=True,
             return_dict=True,
         )
 
-        # Extract tapped hidden states for the CONTEXT (positions 0..block_start-1).
-        # The draft model uses ctx features as keys/values and block noise_emb as queries.
+        # Extract tapped hidden states for the CONTEXT positions.
         target_features_full = extract_target_features(
             target_out.hidden_states, self.draft.target_layer_ids
-        )  # [B, T, n_taps*H]
-        ctx_target_feats = target_features_full[:, :block_start, :].to(self.device)  # [B, ctx_len, n*H]
+        )  # [B, ctx_len, n_taps*H]
+        ctx_target_feats = target_features_full.to(self.device)  # [B, ctx_len, n*H]
 
-        # Embed the mask block tokens; move to draft device
+        # Embed `lookahead` MASK tokens as noise embeddings for the draft
+        mask_block = torch.full(
+            (B, lookahead), self.mask_token_id, dtype=torch.long, device=self.device
+        )
         noise_emb = self.hf_target.model.embed_tokens(
-            full_ids[:, block_start:]
+            mask_block.to(hf_first_device)
         ).to(self.device)  # [B, lookahead, H]
 
-        # Position ids: [0..ctx_len-1, ctx_len..ctx_len+lookahead-1]
-        # draft.forward expects [B, ctx_len + block_len] where first ctx_len are context positions
+        # Position ids: [0..ctx_len-1] for context, [ctx_len..ctx_len+lookahead-1] for block.
+        # draft.forward expects [B, ctx_len + block_len].
         position_ids = torch.arange(T, device=self.device).unsqueeze(0).expand(B, -1)  # [B, ctx+block]
 
         # Draft forward

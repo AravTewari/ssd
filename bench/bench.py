@@ -46,6 +46,7 @@ def parse_arguments():
     parser.add_argument("--block_sz", type=int, default=256, help="KV cache block size (see config.py: kvcache_block_size)")
     parser.add_argument("--b", type=int, default=1, help="Maximum number of sequences in batch")
     parser.add_argument("--max_model_len", type=int, default=8192, help="Maximum model length")
+    parser.add_argument("--gpu_mem_util", type=float, default=0.7, help="GPU memory utilization for KV cache (default 0.7)")
 
     # Generation configuration
     parser.add_argument("--input_len", type=int, default=128, help="Maximum input length")
@@ -184,6 +185,7 @@ def create_llm_kwargs(args, draft_path):
         kvcache_block_size=args.block_sz,
         max_num_seqs=args.b,
         max_model_len=args.max_model_len,
+        gpu_memory_utilization=args.gpu_mem_util,
         sampler_x=args.x,
         jit_speculate=(args.backup == "jit"),
         max_steps=args.max_steps,
