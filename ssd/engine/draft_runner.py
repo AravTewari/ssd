@@ -16,6 +16,14 @@ PROFILE_DRAFT = os.environ.get("SSD_PROFILE_DRAFT", "0") == "1"
 ttl = 0
 ttl_hit = 0
 
+
+@dataclasses.dataclass
+class PendingArOracleBatch:
+    seq_ids: torch.Tensor
+    num_tokens: torch.Tensor
+    temperatures: torch.Tensor
+    draft_block_tables: torch.Tensor
+
 class DraftRunner(ModelRunner):
     
     @classmethod
@@ -44,6 +52,7 @@ class DraftRunner(ModelRunner):
         if self.is_draft and self.draft_async:
             self._reset_tree_cache_tensors()
             self._init_prealloc_buffers()
+            self._pending_ar_oracle = None
             self._draft_step_times = []
             print(f'DraftRunner set up, starting draft_loop', flush=True)
             self.draft_loop()
@@ -855,12 +864,60 @@ class DraftRunner(ModelRunner):
                         spec_text = [self.tokenizer.decode([t]) for t in spec_tokens]
                         print(f"    k={k_idx}, rec={rec_token.item()} ('{rec_text}') -> {spec_text}", flush=True)
             print(f"{'='*80}\n", flush=True)
+
+    def _store_pending_ar_oracle_batch(
+        self,
+        seq_ids: torch.Tensor,
+        num_tokens: torch.Tensor,
+        temperatures: torch.Tensor,
+        draft_block_tables: torch.Tensor,
+    ) -> None:
+        self._pending_ar_oracle = PendingArOracleBatch(
+            seq_ids=seq_ids.clone(),
+            num_tokens=num_tokens.clone(),
+            temperatures=temperatures.clone(),
+            draft_block_tables=draft_block_tables.clone(),
+        )
+
+    def _populate_ar_oracle_cache(self, feedback_meta: torch.Tensor) -> None:
+        if self._pending_ar_oracle is None:
+            raise RuntimeError("AR oracle feedback received without a pending draft batch")
+
+        pending = self._pending_ar_oracle
+        B = feedback_meta.shape[0]
+        K = self.config.speculate_k
+        V = self.hf_config.vocab_size
+
+        if pending.seq_ids.shape[0] != B:
+            raise RuntimeError(
+                f"AR oracle feedback batch size mismatch: pending={pending.seq_ids.shape[0]} feedback={B}"
+            )
+
+        next_keys = feedback_meta.to(torch.int64)
+        next_num_tokens = pending.num_tokens + (next_keys[:, 1] + 1)
+        out_logits = torch.empty((B, K, V), dtype=self.hf_config.torch_dtype, device=self.device)
+        out_tokens = torch.empty((B, K), dtype=torch.int64, device=self.device)
+
+        self.jit_speculate(
+            next_keys,
+            next_num_tokens,
+            out_logits,
+            out_tokens,
+            pending.temperatures,
+            pending.draft_block_tables,
+        )
+
+        self.tree_cache_keys = next_keys.contiguous()
+        self.tree_cache_tokens = out_tokens
+        self.tree_cache_logits = out_logits
+        self.tree_cache_activations = None
+        self._pending_ar_oracle = None
     # new one, with true asynchrony
     def draft_loop(self):
         """
         Runs the asynchronous draft model loop. 
-        Handles three commands:
-          1 = prefill, 0 = spec request, 2 = exit.
+        Handles four commands:
+          1 = prefill, 0 = spec request, 2 = exit, 3 = post-verify feedback.
         """
         assert self.draft_async, "draft_loop only runs in async-draft mode"
 
@@ -881,11 +938,29 @@ class DraftRunner(ModelRunner):
                     torch.cuda.synchronize()
                     _d0 = time.perf_counter()
 
+                if self.config.draft_backend == "ar" and self.config.ar_branch_cache == "off":
+                    self._reset_tree_cache_tensors()
+
                 glue_decode_input_ids, partial_tree_decode_args = self._service_spec_request()
 
                 if _prof or PROFILE_DRAFT:
                     torch.cuda.synchronize()
                     _d1 = time.perf_counter()
+
+                if self.config.draft_backend == "ar" and self.config.ar_branch_cache == "off":
+                    self._draft_step_times.append(time.perf_counter() - _ds0)
+                    continue
+
+                if self.config.draft_backend == "ar" and self.config.ar_branch_key_mode == "oracle":
+                    self._reset_tree_cache_tensors()
+                    self._store_pending_ar_oracle_batch(
+                        seq_ids=partial_tree_decode_args["seq_ids"],
+                        num_tokens=partial_tree_decode_args["num_tokens"],
+                        temperatures=partial_tree_decode_args["temperatures"],
+                        draft_block_tables=partial_tree_decode_args["dbt"],
+                    )
+                    self._draft_step_times.append(time.perf_counter() - _ds0)
+                    continue
 
                 self._reset_tree_cache_tensors()
 
@@ -914,6 +989,23 @@ class DraftRunner(ModelRunner):
                 if PROFILE_DRAFT:
                     flush_draft_profile()
 
+                continue
+
+            elif cmd == 3:
+                if not (self.config.draft_backend == "ar" and self.config.ar_branch_key_mode == "oracle"):
+                    raise RuntimeError("draft_loop received oracle feedback while oracle mode is disabled")
+                if self.config.use_eagle:
+                    raise RuntimeError("AR oracle mode does not support EAGLE")
+
+                if self._pending_ar_oracle is None:
+                    raise RuntimeError("draft_loop received oracle feedback without a pending AR batch")
+
+                B = self._pending_ar_oracle.seq_ids.shape[0]
+                feedback_meta = self.recv_tensor((B, 3), torch.int64)
+                t0 = time.perf_counter()
+                self._populate_ar_oracle_cache(feedback_meta)
+                ack = torch.tensor([time.perf_counter() - t0], dtype=torch.float32, device=self.device)
+                dist.send(ack, dst=0, group=self.async_pg)
                 continue
 
             # EXIT: clean up and break out of the loop

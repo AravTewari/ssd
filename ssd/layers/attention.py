@@ -109,8 +109,11 @@ class Attention(nn.Module):
             )
             decode = not verify_or_glue
             tree_decode = (
-                decode and self.speculate and self.draft and self.draft_async
-                and not context.is_jit
+                context.tree_attention_mode is not None
+                or (
+                    decode and self.speculate and self.draft and self.draft_async
+                    and not context.is_jit
+                )
             )
 
             if verify_or_glue:

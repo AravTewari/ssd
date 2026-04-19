@@ -22,6 +22,8 @@ class Scheduler:
         self.eos = config.eos
         self.speculate = config.speculate
         self.draft_backend = config.draft_backend
+        self.ar_branch_cache = getattr(config, "ar_branch_cache", "on")
+        self.ar_branch_key_mode = getattr(config, "ar_branch_key_mode", "normal")
         self.F = config.async_fan_out
         self.K = config.speculate_k
         self.block_size = config.kvcache_block_size
@@ -97,7 +99,13 @@ class Scheduler:
         
         if async_spec:
             target_lookahead_len = self.K + 1
-            if self.draft_backend == "dflash_ssd":
+            if self.draft_backend in {"dflash_ssd", "ddtree_ssd"} or (
+                self.draft_backend == "ar"
+                and (
+                    getattr(self, "ar_branch_cache", "on") == "off"
+                    or getattr(self, "ar_branch_key_mode", None) == "oracle"
+                )
+            ):
                 draft_lookahead_len = self.K + 1
             else:
                 # this will need to allow F_k strat as just sum(self.fan_out_list) when we add that 
@@ -153,6 +161,7 @@ class Scheduler:
         seq.extend_dflash_token_ids = None
         seq.extend_dflash_count = 0
         seq.frontier_version = 0
+        seq.dflash_cycle_idx = 0
 
     # non-speculative path, should handle completing a block here as well 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int], is_prefill: bool):
@@ -344,7 +353,7 @@ class Scheduler:
                     seq.extend_dflash_target_features = None
                     seq.extend_dflash_count = 0
                     seq.extend_dflash_token_ids = None
-            if self.draft_backend in {"dflash", "dflash_ssd"}:
+            if self.draft_backend in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}:
                 seq.frontier_version += 1
 
             if finished:

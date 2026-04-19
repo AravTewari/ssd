@@ -27,8 +27,20 @@ class Config:
     draft_backend: str = "ar"
     speculate_k: int = 1
     draft_async: bool = False
+    ar_branch_cache: str = "on"
+    ar_branch_key_mode: str = "normal"
     dflash_predictor: str | None = None
     dflash_trace_hidden: bool = False
+    dflash_context_mode: str = "predicted"
+    dflash_branch_cache: str = "on"
+    dflash_branch_key_mode: str = "normal"
+    dflash_enable_diagnostics: bool = False
+    ddtree_tree_budget: int = 16
+    ddtree_frontier_count: int = 1
+    ddtree_context_mode: str = "predicted"
+    ddtree_cache: str = "on"
+    ddtree_frontier_mode: str = "surrogate"
+    ddtree_enable_diagnostics: bool = False
     diffusion_steps: int = 128
     diffusion_remasking: str = "low_confidence"
     diffusion_mask_id: int = 126336
@@ -129,10 +141,25 @@ class Config:
         assert os.path.isdir(model)
 
         assert 1 <= self.num_gpus <= 8 # this codebase only works on one node 
-        assert self.draft_backend in {"ar", "llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd"}, (
+        assert self.draft_backend in {
+            "ar",
+            "llada_diffusion",
+            "dream_diffusion",
+            "dflash",
+            "dflash_ssd",
+            "ddtree",
+            "ddtree_ssd",
+        }, (
             f"Unsupported draft_backend={self.draft_backend}"
         )
-        if self.draft_backend in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd"}:
+        if self.draft_backend in {
+            "llada_diffusion",
+            "dream_diffusion",
+            "dflash",
+            "dflash_ssd",
+            "ddtree",
+            "ddtree_ssd",
+        }:
             assert self.speculate, f"{self.draft_backend} requires speculate=True"
         self.hf_config = AutoConfig.from_pretrained(model)
         self.max_model_len = min(
@@ -141,7 +168,16 @@ class Config:
             draft = self.draft
             self.draft_hf_config = AutoConfig.from_pretrained(
                 draft,
-                trust_remote_code=(self.draft_backend in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd"}),
+                trust_remote_code=(
+                    self.draft_backend in {
+                        "llada_diffusion",
+                        "dream_diffusion",
+                        "dflash",
+                        "dflash_ssd",
+                        "ddtree",
+                        "ddtree_ssd",
+                    }
+                ),
             )
             self.max_model_len = min(
                 self.max_model_len, self._resolve_max_model_len(self.draft_hf_config, self.max_model_len))
@@ -167,7 +203,7 @@ class Config:
                 }, (
                     "dream_diffusion supports remasking modes: origin, maskgit_plus, topk_margin, entropy"
                 )
-            elif self.draft_backend in {"dflash", "dflash_ssd"}:
+            elif self.draft_backend in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}:
                 assert infer_model_family(self.model) == "qwen", (
                     f"{self.draft_backend} currently only supports Qwen targets"
                 )
@@ -182,6 +218,10 @@ class Config:
                     )
                 if self.draft_backend == "dflash_ssd" and not self.draft_async:
                     raise ValueError("dflash_ssd requires draft_async=True")
+                if self.draft_backend == "ddtree" and self.draft_async:
+                    raise ValueError("ddtree requires draft_async=False")
+                if self.draft_backend == "ddtree_ssd" and not self.draft_async:
+                    raise ValueError("ddtree_ssd requires draft_async=True")
                 if self.kvcache_block_size != 128:
                     print(
                         f"[Config] Overriding {self.draft_backend} kvcache_block_size: {self.kvcache_block_size} -> 128",
@@ -198,7 +238,79 @@ class Config:
                         raise ValueError("dflash_ssd requires dflash_predictor=<checkpoint_dir>")
                     if not os.path.exists(self.dflash_predictor):
                         raise FileNotFoundError(f"dflash_ssd predictor checkpoint not found: {self.dflash_predictor}")
-
+                    if self.dflash_context_mode not in {"predicted", "exact"}:
+                        raise ValueError(
+                            "dflash_ssd requires dflash_context_mode in {'predicted', 'exact'}"
+                        )
+                    if self.dflash_branch_cache not in {"on", "off"}:
+                        raise ValueError(
+                            "dflash_ssd requires dflash_branch_cache in {'on', 'off'}"
+                        )
+                    if self.dflash_branch_key_mode not in {"normal", "oracle"}:
+                        raise ValueError(
+                            "dflash_ssd requires dflash_branch_key_mode in {'normal', 'oracle'}"
+                        )
+                    if self.dflash_context_mode == "exact":
+                        if self.dflash_branch_cache == "off":
+                            if self.dflash_branch_key_mode != "normal":
+                                raise ValueError(
+                                    "dflash_ssd exact context with branch cache off only supports "
+                                    "dflash_branch_key_mode=normal"
+                                )
+                        elif self.dflash_branch_cache == "on":
+                            if self.dflash_branch_key_mode != "oracle":
+                                raise ValueError(
+                                    "dflash_ssd exact context with branch cache on only supports "
+                                    "dflash_branch_key_mode=oracle"
+                                )
+                        else:
+                            raise ValueError(
+                                "dflash_ssd exact context requires dflash_branch_cache in {'on', 'off'}"
+                            )
+                    if self.dflash_context_mode == "predicted" and self.dflash_branch_cache == "off":
+                        if self.dflash_branch_key_mode != "oracle":
+                            raise ValueError(
+                                "dflash_ssd predicted context without branch cache requires dflash_branch_key_mode=oracle"
+                            )
+                    if self.dflash_branch_key_mode == "oracle" and self.dflash_context_mode not in {"predicted", "exact"}:
+                        raise ValueError(
+                            "dflash_ssd oracle branch-key mode requires dflash_context_mode in {'predicted', 'exact'}"
+                        )
+                if self.draft_backend == "ddtree_ssd":
+                    if self.dflash_predictor is None and self.ddtree_context_mode == "predicted":
+                        raise ValueError("ddtree_ssd predicted context requires dflash_predictor=<checkpoint_dir>")
+                    if self.ddtree_context_mode not in {"predicted", "exact"}:
+                        raise ValueError(
+                            "ddtree_ssd requires ddtree_context_mode in {'predicted', 'exact'}"
+                        )
+                    if self.ddtree_cache not in {"on", "off"}:
+                        raise ValueError("ddtree_ssd requires ddtree_cache in {'on', 'off'}")
+                    if self.ddtree_frontier_mode not in {"surrogate", "oracle"}:
+                        raise ValueError(
+                            "ddtree_ssd requires ddtree_frontier_mode in {'surrogate', 'oracle'}"
+                        )
+                    if self.ddtree_tree_budget <= 0:
+                        raise ValueError("ddtree_ssd requires ddtree_tree_budget > 0")
+                    if self.ddtree_frontier_count <= 0:
+                        raise ValueError("ddtree_ssd requires ddtree_frontier_count > 0")
+                    if self.ddtree_cache == "off" and self.ddtree_frontier_mode != "oracle":
+                        raise ValueError(
+                            "ddtree_ssd with ddtree_cache=off only supports ddtree_frontier_mode=oracle"
+                        )
+                    if self.ddtree_context_mode == "exact":
+                        if self.ddtree_cache == "on" and self.ddtree_frontier_mode != "oracle":
+                            raise ValueError(
+                                "ddtree_ssd exact context with cache on only supports ddtree_frontier_mode=oracle"
+                            )
+                    elif self.ddtree_cache == "off" and self.ddtree_frontier_mode != "oracle":
+                        raise ValueError(
+                            "ddtree_ssd without cache only supports ddtree_frontier_mode=oracle"
+                        )
+                if self.draft_backend == "ddtree":
+                    if self.ddtree_tree_budget <= 0:
+                        raise ValueError("ddtree requires ddtree_tree_budget > 0")
+                    if self.ddtree_frontier_count <= 0:
+                        raise ValueError("ddtree requires ddtree_frontier_count > 0")
                 dflash_cfg = getattr(self.draft_hf_config, "dflash_config", None) or {}
                 self.dflash_block_size = int(getattr(self.draft_hf_config, "block_size", 0) or 0)
                 self.dflash_mask_token_id = dflash_cfg.get("mask_token_id", None)
@@ -244,6 +356,23 @@ class Config:
                 if self.dflash_mask_token_id >= self.hf_config.vocab_size:
                     raise ValueError(
                         f"{self.draft_backend} mask_token_id={self.dflash_mask_token_id} is outside the target vocab size {self.hf_config.vocab_size}"
+                    )
+            elif self.draft_backend == "ar" and self.draft_async:
+                if self.ar_branch_cache not in {"on", "off"}:
+                    raise ValueError(
+                        "async AR speculation requires ar_branch_cache in {'on', 'off'}"
+                    )
+                if self.ar_branch_key_mode not in {"normal", "oracle"}:
+                    raise ValueError(
+                        "async AR speculation requires ar_branch_key_mode in {'normal', 'oracle'}"
+                    )
+                if self.ar_branch_cache == "off" and self.ar_branch_key_mode != "normal":
+                    raise ValueError(
+                        "async AR speculation with ar_branch_cache=off only supports ar_branch_key_mode=normal"
+                    )
+                if self.ar_branch_key_mode == "oracle" and self.use_eagle:
+                    raise ValueError(
+                        "async AR oracle mode is not implemented for EAGLE"
                     )
 
             if self.draft_async:

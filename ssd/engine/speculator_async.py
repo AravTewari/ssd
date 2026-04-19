@@ -25,6 +25,7 @@ class SpeculatorAsync(SpeculatorBase):
         draft_runner_rank: int,
         tokenizer: AutoTokenizer,
         verbose: bool,
+        branch_key_mode: str = "normal",
     ):
         super().__init__(lookahead, device)
         self.async_fan_out = async_fan_out
@@ -38,6 +39,7 @@ class SpeculatorAsync(SpeculatorBase):
         self.tokenizer = tokenizer
         self.verbose = verbose
         self.K = lookahead
+        self.branch_key_mode = branch_key_mode
 
         # Pre-allocate handshake send/recv buffers (reused every step)
         self._alloc_handshake_bufs(1)
@@ -45,6 +47,8 @@ class SpeculatorAsync(SpeculatorBase):
         # Pre-allocate speculate() output buffers (avoid torch.tensor(device=cuda) sync)
         self._recovery_buf = torch.empty(1, dtype=torch.int64, device=device)
         self._speculations_buf = torch.empty(1, lookahead + 1, dtype=torch.int64, device=device)
+        self._feedback_meta = torch.empty(1, 3, dtype=torch.int64, device=device)
+        self._feedback_ack = torch.empty(1, dtype=torch.float32, device=device)
 
     def _alloc_handshake_bufs(self, B):
         self._hs_B = B
@@ -126,6 +130,24 @@ class SpeculatorAsync(SpeculatorBase):
             seq.num_draft_cached_tokens += len(speculations_tokens[i]) + 1
 
         return SpeculateResult(speculations, logits_q, cache_hits)
+
+    def post_verify_feedback(self, seqs: list[Sequence], verify_result: VerifyResult) -> None:
+        if self.branch_key_mode != "oracle":
+            return
+
+        batch_size = len(seqs)
+        if self._feedback_meta.shape[0] != batch_size:
+            self._feedback_meta = torch.empty(batch_size, 3, dtype=torch.int64, device=self.device)
+
+        cmd = torch.tensor([3], dtype=torch.int64, device=self.device)
+        for row_idx, seq in enumerate(seqs):
+            self._feedback_meta[row_idx, 0] = seq.seq_id
+            self._feedback_meta[row_idx, 1] = len(verify_result.new_suffixes[row_idx]) - 1
+            self._feedback_meta[row_idx, 2] = int(verify_result.recovery_tokens[row_idx])
+
+        dist.send(cmd, dst=self.draft_runner_rank, group=self.async_pg)
+        dist.send(self._feedback_meta, dst=self.draft_runner_rank, group=self.async_pg)
+        dist.recv(self._feedback_ack, src=self.draft_runner_rank, group=self.async_pg)
 
     def _speculation_request(self, seqs: list[Sequence], eagle: bool):
         B = len(seqs)

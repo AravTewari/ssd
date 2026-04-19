@@ -24,6 +24,7 @@ class Sequence:
         'extend_eagle_acts', 'extend_token_ids', 'extend_count',
         'last_dflash_target_feature', 'extend_dflash_target_features',
         'extend_dflash_token_ids', 'extend_dflash_count', 'frontier_version',
+        'dflash_cycle_idx',
     ]
 
     def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
@@ -56,6 +57,7 @@ class Sequence:
         self.extend_dflash_token_ids = None
         self.extend_dflash_count = 0
         self.frontier_version = 0
+        self.dflash_cycle_idx = 0
 
     def __len__(self):
         return self.num_tokens

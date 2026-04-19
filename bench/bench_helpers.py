@@ -93,11 +93,11 @@ def _get_draft_model_path(args, cache_dir: str) -> str:
 
 def get_model_paths(args, cache_dir: str = HF_CACHE_DIR) -> Tuple[str, str, Optional[str]]:
     """Resolve model and draft paths (pointing to snapshot dirs with config.json)."""
-    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd"} and args.llama:
+    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd", "ddtree", "ddtree_ssd"} and args.llama:
         raise ValueError(f"{args.draft_backend} currently only supports Qwen targets")
-    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd"} and getattr(args, "draft", None) and not os.path.isdir(args.draft):
+    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd", "ddtree", "ddtree_ssd"} and getattr(args, "draft", None) and not os.path.isdir(args.draft):
         raise ValueError(f"{args.draft_backend} expects --draft to be a model directory when provided")
-    if getattr(args, "draft_backend", "ar") in {"dflash", "dflash_ssd"}:
+    if getattr(args, "draft_backend", "ar") in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}:
         if args.size != "8":
             raise ValueError(f"{args.draft_backend} currently only supports Qwen3-8B targets")
         if args.gpus != 2:
@@ -144,7 +144,7 @@ def get_model_paths(args, cache_dir: str = HF_CACHE_DIR) -> Tuple[str, str, Opti
         draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_LLADA_DRAFT
     elif getattr(args, "draft_backend", "ar") == "dream_diffusion":
         draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_DREAM_DRAFT
-    elif getattr(args, "draft_backend", "ar") in {"dflash", "dflash_ssd"}:
+    elif getattr(args, "draft_backend", "ar") in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}:
         draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_DFLASH_DRAFT
     elif getattr(args, "eagle", False) or getattr(args, "draft", None):
         draft_base = _get_draft_model_path(args, cache_dir)

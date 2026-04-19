@@ -28,10 +28,11 @@ class Verifier(VerifierBase):
         self.jit_speculate = jit_speculate
         self.tokenizer = tokenizer
         self.metrics = metrics
+        self._dflash_backends = {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}
 
     def prefill(self, seqs: list[Sequence], eagle: bool = False) -> VerifyResult:
         result = self.target_model_runner.call("run", seqs, True)
-        dflash = self.target_model_runner.config.draft_backend in {"dflash", "dflash_ssd"}
+        dflash = self.target_model_runner.config.draft_backend in self._dflash_backends
         if eagle:
             token_ids, eagle_acts = result
             dflash_target_features = None
@@ -61,10 +62,52 @@ class Verifier(VerifierBase):
             eagle_acts if eagle else None,
             dflash_target_features=dflash_target_features,
             dflash_target_features_full=None,
+            target_verify_s=None,
+        )
+
+    def _verify_ddtree(self, seqs: list[Sequence], speculate_result: SpeculateResult) -> VerifyResult:
+        if speculate_result.ddtree_entries is None:
+            raise RuntimeError("DDTree verify requested without ddtree_entries")
+
+        t0 = perf_counter()
+        accepted_suffixes, recovery_tokens, committed_features, visited_node_counts, tree_node_counts, tree_compile_s = self.target_model_runner.call(
+            "run_ddtree_verify",
+            seqs,
+            speculate_result.ddtree_entries,
+        )
+        elapsed = perf_counter() - t0
+        self.metrics["target_verify_times"].append(elapsed)
+        self.metrics["accepted_suffix_lens_with_recovery"].extend([len(suffix) for suffix in accepted_suffixes])
+        if "ddtree_verified_node_counts" in self.metrics:
+            self.metrics["ddtree_verified_node_counts"].extend(visited_node_counts)
+        if "ddtree_tree_node_counts" in self.metrics:
+            self.metrics["ddtree_tree_node_counts"].extend(tree_node_counts)
+        if "ddtree_tree_compile_times" in self.metrics:
+            self.metrics["ddtree_tree_compile_times"].append(tree_compile_s)
+        if speculate_result.cache_hits is not None:
+            cache_hits_cpu = speculate_result.cache_hits.cpu()
+            self.metrics["cache_hits"].append(cache_hits_cpu.float().mean().item())
+            for row_idx, suffix_len in enumerate([len(suffix) for suffix in accepted_suffixes]):
+                if cache_hits_cpu[row_idx] == 1:
+                    self.metrics["accepted_suffix_lens_on_hit"].append(suffix_len)
+                else:
+                    self.metrics["accepted_suffix_lens_on_miss"].append(suffix_len)
+
+        return VerifyResult(
+            new_suffixes=accepted_suffixes,
+            recovery_tokens=[int(token) for token in recovery_tokens],
+            eagle_acts=None,
+            dflash_target_features=committed_features,
+            dflash_target_features_full=None,
+            target_verify_s=elapsed,
+            ddtree_verified_node_counts=visited_node_counts,
         )
 
     def verify(self, seqs: list[Sequence], speculate_result: SpeculateResult, eagle: bool = False) -> VerifyResult:
         """Verify speculative tokens using the target model."""
+        if speculate_result.ddtree_entries is not None:
+            return self._verify_ddtree(seqs, speculate_result)
+
         _prof = os.environ.get("SSD_PROFILE", "0") == "1"
         batch_size = len(seqs)
 
@@ -85,7 +128,7 @@ class Verifier(VerifierBase):
             _vt_call = perf_counter()
             print(f"[PROFILE verifier] target_call={(_vt_call-_tv0)*1000:.2f}ms eagle={eagle} bs={batch_size}", flush=True)
 
-        dflash = self.target_model_runner.config.draft_backend in {"dflash", "dflash_ssd"}
+        dflash = self.target_model_runner.config.draft_backend in self._dflash_backends
         if eagle:
             logits_p_flat, eagle_acts_flat = result
             dflash_features_flat = None
@@ -179,4 +222,5 @@ class Verifier(VerifierBase):
             eagle_acts=eagle_acts,
             dflash_target_features=dflash_target_features,
             dflash_target_features_full=dflash_target_features_full,
+            target_verify_s=perf_counter() - _tv0,
         )
