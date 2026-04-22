@@ -1,0 +1,464 @@
+{
+  "alpaca:1": {
+    "accepted_suffix_mean": 2.909090909090909,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 21.02193293101017
+  },
+  "alpaca:110": {
+    "accepted_suffix_mean": 2.5384615384615383,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 56.87484851486342
+  },
+  "alpaca:135": {
+    "accepted_suffix_mean": 3.6666666666666665,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 89.334022405896
+  },
+  "alpaca:155": {
+    "accepted_suffix_mean": 2.4,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 53.70451516375986
+  },
+  "alpaca:156": {
+    "accepted_suffix_mean": 3.7,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 86.30750052807025
+  },
+  "alpaca:166": {
+    "accepted_suffix_mean": 2.357142857142857,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 58.660610411418865
+  },
+  "alpaca:172": {
+    "accepted_suffix_mean": 2.3125,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 57.73683685013907
+  },
+  "alpaca:182": {
+    "accepted_suffix_mean": 2.5,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 61.046861613517024
+  },
+  "alpaca:184": {
+    "accepted_suffix_mean": 2.6666666666666665,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 66.32095992105569
+  },
+  "alpaca:186": {
+    "accepted_suffix_mean": 2.642857142857143,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 65.0222691508879
+  },
+  "alpaca:19": {
+    "accepted_suffix_mean": 2.909090909090909,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 67.7472607950692
+  },
+  "alpaca:191": {
+    "accepted_suffix_mean": 2.909090909090909,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 70.87372404731455
+  },
+  "alpaca:199": {
+    "accepted_suffix_mean": 2.2857142857142856,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 55.33723518892011
+  },
+  "alpaca:33": {
+    "accepted_suffix_mean": 6.166666666666667,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 146.83561893171358
+  },
+  "alpaca:47": {
+    "accepted_suffix_mean": 2.75,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 66.15662131748337
+  },
+  "alpaca:48": {
+    "accepted_suffix_mean": 2.2857142857142856,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 55.487438045355105
+  },
+  "alpaca:5": {
+    "accepted_suffix_mean": 3.5,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 71.57679442590144
+  },
+  "alpaca:54": {
+    "accepted_suffix_mean": 3.3636363636363638,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 79.13240187922
+  },
+  "alpaca:95": {
+    "accepted_suffix_mean": 2.3333333333333335,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 57.35818916321407
+  },
+  "gsm:105": {
+    "accepted_suffix_mean": 2.8333333333333335,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 61.72484678441098
+  },
+  "gsm:106": {
+    "accepted_suffix_mean": 4,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 68.71149771257807
+  },
+  "gsm:119": {
+    "accepted_suffix_mean": 3.6,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 65.14612486760441
+  },
+  "gsm:122": {
+    "accepted_suffix_mean": 4.25,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 96.37792752304203
+  },
+  "gsm:138": {
+    "accepted_suffix_mean": 4.125,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 93.46019503973403
+  },
+  "gsm:142": {
+    "accepted_suffix_mean": 3.1818181818181817,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 72.11925877477421
+  },
+  "gsm:149": {
+    "accepted_suffix_mean": 2.5714285714285716,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 58.43633997331727
+  },
+  "gsm:157": {
+    "accepted_suffix_mean": 4.375,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 86.04781774174977
+  },
+  "gsm:158": {
+    "accepted_suffix_mean": 3,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 71.97815445387894
+  },
+  "gsm:178": {
+    "accepted_suffix_mean": 3.4,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 73.4074908245304
+  },
+  "gsm:187": {
+    "accepted_suffix_mean": 3.7777777777777777,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 89.85908696499864
+  },
+  "gsm:196": {
+    "accepted_suffix_mean": 3.7,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 88.72042554658682
+  },
+  "gsm:198": {
+    "accepted_suffix_mean": 3.2,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 77.75836599642857
+  },
+  "gsm:24": {
+    "accepted_suffix_mean": 2.1333333333333333,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 43.714249430655336
+  },
+  "gsm:3": {
+    "accepted_suffix_mean": 4,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 81.1085445581523
+  },
+  "gsm:33": {
+    "accepted_suffix_mean": 3.888888888888889,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 86.59325577959443
+  },
+  "gsm:39": {
+    "accepted_suffix_mean": 4.571428571428571,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 105.46356547575799
+  },
+  "gsm:43": {
+    "accepted_suffix_mean": 2.5384615384615383,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 60.57196180143127
+  },
+  "gsm:45": {
+    "accepted_suffix_mean": 3.2,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 74.29614456709676
+  },
+  "gsm:46": {
+    "accepted_suffix_mean": 4.444444444444445,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 106.53243229946783
+  },
+  "gsm:65": {
+    "accepted_suffix_mean": 3.090909090909091,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 74.23409480608937
+  },
+  "gsm:69": {
+    "accepted_suffix_mean": 3.4,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 81.82615601841196
+  },
+  "gsm:94": {
+    "accepted_suffix_mean": 3.3,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 78.3478833334369
+  },
+  "humaneval:105": {
+    "accepted_suffix_mean": 5.333333333333333,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 102.89850400525182
+  },
+  "humaneval:110": {
+    "accepted_suffix_mean": 6.166666666666667,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 119.88354494908474
+  },
+  "humaneval:125": {
+    "accepted_suffix_mean": 6.6,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 136.860246241224
+  },
+  "humaneval:138": {
+    "accepted_suffix_mean": 6.166666666666667,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 134.96190303182948
+  },
+  "humaneval:146": {
+    "accepted_suffix_mean": 5.666666666666667,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 125.92815553529326
+  },
+  "humaneval:150": {
+    "accepted_suffix_mean": 9.25,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 206.41644022546456
+  },
+  "humaneval:26": {
+    "accepted_suffix_mean": 8,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 171.56949729564766
+  },
+  "humaneval:30": {
+    "accepted_suffix_mean": 4,
+    "cache_committed_token_fraction": 0.05555555555555555,
+    "cache_hit_mean": 0.2222222222222222,
+    "throughput_tok_s": 89.69267715598512
+  },
+  "humaneval:39": {
+    "accepted_suffix_mean": 8.25,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 169.23374075156713
+  },
+  "humaneval:42": {
+    "accepted_suffix_mean": 3.8,
+    "cache_committed_token_fraction": 0.05263157894736842,
+    "cache_hit_mean": 0.1,
+    "throughput_tok_s": 85.26437222246652
+  },
+  "humaneval:46": {
+    "accepted_suffix_mean": 10,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 179.90567513422528
+  },
+  "humaneval:56": {
+    "accepted_suffix_mean": 8.2,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 181.6217203017102
+  },
+  "humaneval:6": {
+    "accepted_suffix_mean": 10,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 109.84035463278339
+  },
+  "humaneval:62": {
+    "accepted_suffix_mean": 5.142857142857143,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 112.3821031066941
+  },
+  "humaneval:71": {
+    "accepted_suffix_mean": 7,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 147.40808568860936
+  },
+  "humaneval:82": {
+    "accepted_suffix_mean": 8,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 181.47588621328813
+  },
+  "humaneval:9": {
+    "accepted_suffix_mean": 8,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 94.48167794930212
+  },
+  "humaneval:92": {
+    "accepted_suffix_mean": 7.6,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 163.97479254722512
+  },
+  "humaneval:96": {
+    "accepted_suffix_mean": 7.6,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 155.10530877530567
+  },
+  "humaneval:97": {
+    "accepted_suffix_mean": 8,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 181.32387645773537
+  },
+  "ultrafeedback:0": {
+    "accepted_suffix_mean": 3.4,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 78.87686495296595
+  },
+  "ultrafeedback:1": {
+    "accepted_suffix_mean": 2.1333333333333333,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 50.17567965602166
+  },
+  "ultrafeedback:106": {
+    "accepted_suffix_mean": 2.909090909090909,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 67.02192278868726
+  },
+  "ultrafeedback:113": {
+    "accepted_suffix_mean": 2.2666666666666666,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 50.33777107166793
+  },
+  "ultrafeedback:128": {
+    "accepted_suffix_mean": 2.909090909090909,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 59.69797952869373
+  },
+  "ultrafeedback:145": {
+    "accepted_suffix_mean": 2,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 40.64818696777557
+  },
+  "ultrafeedback:153": {
+    "accepted_suffix_mean": 2.6923076923076925,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 60.57189784170262
+  },
+  "ultrafeedback:154": {
+    "accepted_suffix_mean": 2.9166666666666665,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 65.31974947167468
+  },
+  "ultrafeedback:160": {
+    "accepted_suffix_mean": 1.8823529411764706,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 38.762564234819465
+  },
+  "ultrafeedback:167": {
+    "accepted_suffix_mean": 2.357142857142857,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 46.079920933529664
+  },
+  "ultrafeedback:180": {
+    "accepted_suffix_mean": 3.3,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 56.61529901507883
+  },
+  "ultrafeedback:27": {
+    "accepted_suffix_mean": 2.4615384615384617,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 56.54001069142554
+  },
+  "ultrafeedback:41": {
+    "accepted_suffix_mean": 2.357142857142857,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 55.12181418193561
+  },
+  "ultrafeedback:61": {
+    "accepted_suffix_mean": 2.75,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 62.720268627519644
+  },
+  "ultrafeedback:91": {
+    "accepted_suffix_mean": 2.2666666666666666,
+    "cache_committed_token_fraction": 0.0,
+    "cache_hit_mean": 0.0,
+    "throughput_tok_s": 53.17503574193998
+  }
+}

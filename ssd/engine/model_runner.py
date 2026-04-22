@@ -22,6 +22,12 @@ from ssd.engine.helpers.runner_helpers import (
     prepare_block_tables_from_seqs, 
     prepare_prefill_tensors_from_seqs
 )
+from ssd.engine.helpers.ddtree import (
+    DDTreeEntry,
+    build_verify_mask,
+    walk_verified_tree,
+    unpack_tree_nodes,
+)
 from ssd.engine.helpers.cudagraph_helpers import (
     run_verify_cudagraph,
     run_decode_cudagraph,
@@ -89,15 +95,17 @@ class ModelRunner:
         torch.cuda.set_device(self.rank)
         self.device = torch.device(f'cuda:{self.rank}') 
         
-        # cudagraph logic for FlashInfer kernels, need diff wrapper for each batch size we make a graph for 
-        if is_draft and config.draft_async:
+        # FlashInfer wrappers are used for async draft tree decode and eager DDTree target verify.
+        if (is_draft and config.draft_async) or (
+            (not is_draft) and config.speculate and config.draft_backend in {"ddtree", "ddtree_ssd"}
+        ):
             self._init_flashinfer_wrappers()
         
         if self.verbose: print(f'INSIDE MODEL RUNNER INIT, DRAFT={is_draft}', flush=True)
         self.tp_pg = None 
 
         if should_use_dist: 
-            default_port = 1223 
+            default_port = int(os.environ.get("SSD_DIST_PORT", "1223"))
             dist.init_process_group(
                 "nccl", f"tcp://localhost:{default_port}",
                 world_size=self.world_size,
@@ -159,13 +167,51 @@ class ModelRunner:
 
     def _init_flashinfer_wrappers(self):
         """Initialize FlashInfer wrappers for draft async mode."""
+        # Async tree-decode graph capture for larger AR/DDTree branch buckets can exceed 512 MiB.
+        # B200-class evaluation runs have ample headroom, so reserve a larger FlashInfer workspace.
         self.workspace_buffer = torch.zeros(
-            512 * 1024 * 1024, dtype=torch.uint8, device=f"cuda:{self.rank}") 
-        
-        if self.config.enforce_eager: 
+            2 * 1024 * 1024 * 1024, dtype=torch.uint8, device=f"cuda:{self.rank}") 
+
+        needs_eager_only_wrapper = (
+            self.config.enforce_eager
+            or (
+                not self.is_draft
+                and self.config.speculate
+                and self.config.draft_backend in {"ddtree", "ddtree_ssd"}
+            )
+        )
+
+        if needs_eager_only_wrapper:
             self.only_prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace_buffer, "NHD")
         else: 
-            max_bs = min(self.config.max_num_seqs, 512)
+            async_tree_decode = (
+                self.config.speculate
+                and self.config.draft_async
+                and self.is_draft
+            )
+            if async_tree_decode:
+                # Async draft tree decode can issue a much larger effective batch than max_num_seqs.
+                # Mirror the fi_tree_decode bucket sizing so eager fallback path can always find a wrapper.
+                max_bs = min(
+                    self.config.max_num_seqs * (self.config.speculate_k + 1) * self.config.async_fan_out,
+                    512,
+                )
+                graph_bs_list = []
+                bs = 1
+                while bs < max_bs:
+                    graph_bs_list.append(bs)
+                    bs *= 2
+                if max_bs not in graph_bs_list:
+                    graph_bs_list.append(max_bs)
+            else:
+                max_bs = min(self.config.max_num_seqs, 512)
+                graph_bs_list = [1]
+                for bs in [2, 4, 8] + list(range(16, max_bs + 1, 16)):
+                    if bs <= max_bs:
+                        graph_bs_list.append(bs)
+                if max_bs not in graph_bs_list:
+                    graph_bs_list.append(max_bs)
+                graph_bs_list.sort()
             max_num_blocks = (self.config.max_model_len + self.block_size - 1) // self.block_size
             
             # FlashInfer kernel tensors
@@ -180,15 +226,6 @@ class ModelRunner:
             kv_last_page_len = torch.empty(max_bs, dtype=torch.int32, device=self.device)
             custom_mask_buf = torch.empty(max_bs * MQ_LEN * self.config.max_model_len, dtype=torch.uint8, device=self.device)
             mask_indptr_buf = torch.empty(max_bs + 1, dtype=torch.int32, device=self.device)
-            
-            # Create graph_bs_list to match what will be used in cudagraph_helpers.py
-            graph_bs_list = [1]
-            for bs in [2, 4, 8] + list(range(16, max_bs + 1, 16)):
-                if bs <= max_bs:
-                    graph_bs_list.append(bs)
-            if max_bs not in graph_bs_list:
-                graph_bs_list.append(max_bs)
-            graph_bs_list.sort()
             
             # Create a dict of wrappers, one for each bs we will touch in cudagraph_helpers.py
             self.prefill_wrappers = {}
@@ -501,7 +538,14 @@ class ModelRunner:
                 module.v_cache = self.kv_cache[1, layer_id]
                 if self.is_draft and self.draft_async and not self.enforce_eager:
                     module.prefill_wrappers = self.prefill_wrappers
-                elif self.is_draft and self.draft_async and self.enforce_eager:
+                elif (
+                    (self.is_draft and self.draft_async and self.enforce_eager)
+                    or (
+                        not self.is_draft
+                        and self.config.speculate
+                        and self.config.draft_backend in {"ddtree", "ddtree_ssd"}
+                    )
+                ):
                     module.only_prefill_wrapper = self.only_prefill_wrapper # this will make it not None so it can be used on fwd
                 layer_id += 1
 
@@ -518,7 +562,219 @@ class ModelRunner:
         set_context(is_prefill=True, cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_q=max_seqlen_q,
                     max_seqlen_k=max_seqlen_k, slot_mapping=slot_mapping, context_lens=None, block_tables=block_tables)
         return input_ids, positions
-    
+
+    def prepare_prefill_token_batches(self, token_batches: list[list[int]]):
+        if not token_batches:
+            raise ValueError("prepare_prefill_token_batches requires a non-empty batch")
+        input_ids = []
+        positions = []
+        cu_seqlens = [0]
+        slot_mapping = []
+        max_seqlen = 0
+        for token_ids in token_batches:
+            if not token_ids:
+                raise ValueError("prepare_prefill_token_batches does not support empty token batches")
+            input_ids.extend(token_ids)
+            positions.extend(range(len(token_ids)))
+            cu_seqlens.append(cu_seqlens[-1] + len(token_ids))
+            slot_mapping.extend([-1] * len(token_ids))
+            max_seqlen = max(max_seqlen, len(token_ids))
+
+        input_ids_t = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        positions_t = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        cu_seqlens_t = torch.tensor(cu_seqlens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        slot_mapping_t = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        set_context(
+            is_prefill=True,
+            cu_seqlens_q=cu_seqlens_t,
+            cu_seqlens_k=cu_seqlens_t,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            slot_mapping=slot_mapping_t,
+            context_lens=None,
+            block_tables=None,
+        )
+        return input_ids_t, positions_t
+
+    def _slot_for_position(self, seq: Sequence, position: int) -> int:
+        block_idx = position // self.block_size
+        block_id = seq.block_table[block_idx]
+        return block_id * self.block_size + (position % self.block_size)
+
+    def prepare_ddtree_verify(self, seqs: list[Sequence], entries: list[DDTreeEntry]):
+        if len(seqs) != len(entries):
+            raise ValueError("prepare_ddtree_verify requires seqs and entries to have the same batch size")
+        if self.only_prefill_wrapper is None:
+            raise RuntimeError("DDTree verify requires an eager FlashInfer prefill wrapper on the target")
+
+        input_id_rows = []
+        position_rows = []
+        slot_mapping = []
+        context_lens = []
+        q_lens = []
+        mask_segments = []
+
+        for seq, entry in zip(seqs, entries):
+            if entry.verify_input_ids is None or entry.verify_positions is None:
+                raise RuntimeError("DDTree verify requires compiled verify_input_ids and verify_positions")
+            q_len = int(entry.num_nodes) + 1
+            input_id_rows.append(entry.verify_input_ids[:q_len].to(device=self.device, dtype=torch.int64, non_blocking=False))
+            position_rows.append(entry.verify_positions[:q_len].to(device=self.device, dtype=torch.int64, non_blocking=False))
+            q_lens.append(q_len)
+            prefix_len = int(seq.num_cached_tokens)
+            context_lens.append(prefix_len + q_len)
+            mask_segments.append(
+                build_verify_mask(
+                    prefix_len=prefix_len,
+                    parents=entry.parents,
+                    num_nodes=entry.num_nodes,
+                    device=self.device,
+                )
+            )
+            for q_idx in range(q_len):
+                slot_mapping.append(self._slot_for_position(seq, prefix_len + q_idx))
+
+        input_ids = torch.cat(input_id_rows, dim=0)
+        positions = torch.cat(position_rows, dim=0)
+        q_lens_t = torch.tensor(q_lens, dtype=torch.int32, device=self.device)
+        context_lens_t = torch.tensor(context_lens, dtype=torch.int32, device=self.device)
+        slot_mapping_t = torch.tensor(slot_mapping, dtype=torch.int32, device=self.device)
+        block_tables = prepare_block_tables_from_seqs(seqs, is_draft=False)
+        custom_mask = torch.cat(mask_segments, dim=0)
+
+        set_context(
+            is_prefill=False,
+            cu_seqlens_q=None,
+            cu_seqlens_k=None,
+            max_seqlen_q=int(q_lens_t.max().item()),
+            max_seqlen_k=0,
+            slot_mapping=slot_mapping_t,
+            context_lens=context_lens_t,
+            block_tables=block_tables,
+            tree_attention_mode="ddtree_verify",
+        )
+        return input_ids, positions, q_lens_t, context_lens_t, block_tables, custom_mask
+
+    def eager_ddtree_verify_plan(
+        self,
+        q_lens: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_tables: torch.Tensor,
+        custom_mask: torch.Tensor,
+    ) -> None:
+        counts = ((context_lens + self.block_size - 1) // self.block_size).to(torch.int32)
+        kv_indptr = torch.zeros((counts.shape[0] + 1,), dtype=torch.int32, device=self.device)
+        kv_indptr[1:] = torch.cumsum(counts, dim=0)
+        mask = torch.arange(block_tables.size(1), device=self.device)[None, :] < counts[:, None]
+        kv_indices = block_tables[mask]
+        kv_last_page_len = (context_lens % self.block_size).to(torch.int32)
+        kv_last_page_len[kv_last_page_len == 0] = self.block_size
+        qo_indptr = torch.zeros((q_lens.shape[0] + 1,), dtype=torch.int32, device=self.device)
+        qo_indptr[1:] = torch.cumsum(q_lens, dim=0)
+
+        self.only_prefill_wrapper.plan(
+            qo_indptr,
+            kv_indptr,
+            kv_indices,
+            kv_last_page_len,
+            self.hf_config.num_attention_heads,
+            self.hf_config.num_key_value_heads,
+            self.hf_config.head_dim,
+            self.block_size,
+            custom_mask=custom_mask,
+            q_data_type=self.hf_config.torch_dtype,
+            kv_data_type=self.hf_config.torch_dtype,
+        )
+
+    def _compact_ddtree_kv(
+        self,
+        seq: Sequence,
+        accepted_query_indices: list[int],
+    ) -> None:
+        if not accepted_query_indices:
+            return
+        prefix_len = int(seq.num_cached_tokens)
+        src_slots = torch.tensor(
+            [self._slot_for_position(seq, prefix_len + q_idx) for q_idx in accepted_query_indices],
+            dtype=torch.int64,
+            device=self.device,
+        )
+        dst_slots = torch.tensor(
+            [self._slot_for_position(seq, prefix_len + i) for i in range(len(accepted_query_indices))],
+            dtype=torch.int64,
+            device=self.device,
+        )
+        if torch.equal(src_slots, dst_slots):
+            return
+
+        num_kv_heads = self.hf_config.num_key_value_heads // self.num_tp_gpus
+        head_dim = self.hf_config.head_dim
+        for layer_idx in range(self.hf_config.num_hidden_layers):
+            k_flat = self.kv_cache[0, layer_idx].view(-1, num_kv_heads, head_dim)
+            v_flat = self.kv_cache[1, layer_idx].view(-1, num_kv_heads, head_dim)
+            k_src = k_flat[src_slots].clone()
+            v_src = v_flat[src_slots].clone()
+            k_flat[dst_slots] = k_src
+            v_flat[dst_slots] = v_src
+
+    @torch.inference_mode()
+    def run_ddtree_verify(
+        self,
+        seqs: list[Sequence],
+        entries: list[DDTreeEntry],
+    ) -> tuple[list[list[int]], list[int], list[torch.Tensor], list[int], list[int], float]:
+        if self.is_draft:
+            raise RuntimeError("run_ddtree_verify is only valid on the target runner")
+        if self.hf_config.model_type != "qwen3":
+            raise RuntimeError("DDTree verify currently only supports Qwen3 targets")
+
+        compile_t0 = time.perf_counter()
+        input_ids, positions, q_lens, context_lens, block_tables, custom_mask = self.prepare_ddtree_verify(seqs, entries)
+        self.eager_ddtree_verify_plan(q_lens=q_lens, context_lens=context_lens, block_tables=block_tables, custom_mask=custom_mask)
+        compile_s = time.perf_counter() - compile_t0
+
+        try:
+            outputs, dflash_target_features = self.model(
+                input_ids,
+                positions,
+                dflash_layer_ids=self.config.dflash_target_layer_ids,
+            )
+            flat_logits = self.model.compute_logits(outputs, last_only=False)
+        finally:
+            reset_context()
+
+        new_suffixes: list[list[int]] = []
+        recovery_tokens: list[int] = []
+        committed_features: list[torch.Tensor] = []
+        verified_node_counts: list[int] = []
+        tree_node_counts: list[int] = []
+
+        offset = 0
+        for seq, entry in zip(seqs, entries):
+            q_len = int(entry.num_nodes) + 1
+            seq_logits = flat_logits[offset:offset + q_len]
+            seq_features = dflash_target_features[offset:offset + q_len]
+            nodes = unpack_tree_nodes(
+                node_token_ids=entry.node_token_ids,
+                node_depths=entry.node_depths,
+                parents=entry.parents,
+                num_nodes=entry.num_nodes,
+            )
+            traversal = walk_verified_tree(
+                recovery_token=entry.recovery_token,
+                nodes=nodes,
+                flat_logits=seq_logits,
+            )
+            self._compact_ddtree_kv(seq, traversal.accepted_query_indices)
+            new_suffixes.append(traversal.accepted_suffix)
+            recovery_tokens.append(int(traversal.recovery_token))
+            committed_features.append(seq_features[traversal.accepted_query_indices].clone())
+            verified_node_counts.append(int(traversal.visited_node_count))
+            tree_node_counts.append(int(entry.num_nodes))
+            offset += q_len
+
+        return new_suffixes, recovery_tokens, committed_features, verified_node_counts, tree_node_counts, compile_s
+
     def prepare_decode(self, seqs: list[Sequence], verify: bool = False): 
         input_ids, positions, slot_mapping, context_lens = \
             prepare_decode_tensors_from_seqs(seqs, self.block_size, self.is_draft, verify, self.config.speculate_k if verify else -1)
@@ -551,6 +807,95 @@ class ModelRunner:
                 temperatures.append(seq.temperature)
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
         return temperatures
+
+    @torch.inference_mode()
+    def run_token_batch(
+        self,
+        token_batches: list[list[int]],
+        last_only: bool = True,
+        return_dflash_features: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        input_ids, positions = self.prepare_prefill_token_batches(token_batches)
+        if return_dflash_features:
+            logits, dflash_target_features = self.run_model(
+                input_ids,
+                positions,
+                is_prefill=True,
+                last_only=last_only,
+            )
+            reset_context()
+            return logits, dflash_target_features
+        logits = self.run_model(
+            input_ids,
+            positions,
+            is_prefill=True,
+            last_only=last_only,
+        )
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        reset_context()
+        return logits
+
+    @torch.inference_mode()
+    def commit_suffix(
+        self,
+        seqs: list[Sequence],
+        suffixes: list[list[int]],
+    ) -> list[torch.Tensor] | None:
+        if len(seqs) != len(suffixes):
+            raise ValueError("commit_suffix requires seqs and suffixes to have the same batch size")
+        if not seqs:
+            return [] if self.config.draft_backend in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"} else None
+
+        saved = [
+            (len(seq.token_ids), seq.num_tokens, seq.last_token)
+            for seq in seqs
+        ]
+        committed_lengths = []
+        for seq, suffix in zip(seqs, suffixes):
+            if suffix:
+                seq.token_ids.extend(suffix)
+                seq.num_tokens += len(suffix)
+            seq.last_token = seq.token_ids[-1]
+            committed_lengths.append(seq.num_tokens - seq.num_cached_tokens)
+
+        input_ids, positions = self.prepare_prefill(seqs)
+        dflash = (
+            self.config.speculate
+            and self.config.draft_backend in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}
+            and not self.is_draft
+        )
+        if dflash:
+            _logits, dflash_target_features_flat = self.run_model(
+                input_ids,
+                positions,
+                is_prefill=True,
+                last_only=False,
+            )
+        else:
+            self.run_model(
+                input_ids,
+                positions,
+                is_prefill=True,
+                last_only=False,
+            )
+            dflash_target_features_flat = None
+        reset_context()
+
+        for seq, (orig_len, orig_num_tokens, orig_last_token) in zip(seqs, saved):
+            del seq.token_ids[orig_len:]
+            seq.num_tokens = orig_num_tokens
+            seq.last_token = orig_last_token
+
+        if not dflash or dflash_target_features_flat is None:
+            return None
+
+        feature_list = []
+        offset = 0
+        for committed_len in committed_lengths:
+            feature_list.append(dflash_target_features_flat[offset:offset + committed_len].clone())
+            offset += committed_len
+        return feature_list
 
     def eager_tree_decode_plan(self, input_ids, positions, step, cache_hits):
         """Plan FlashInfer for tree decode in eager mode"""
@@ -599,9 +944,13 @@ class ModelRunner:
         is_tree_decode = self.is_draft and self.config.draft_async and tree_decode_step >= 0
         is_mq_kp1 = self.config.speculate and not last_only
         spec_and_dec = not is_prefill and self.config.speculate
+        use_dflash = (
+            self.config.speculate
+            and self.config.draft_backend in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}
+            and not self.is_draft
+            and self.hf_config.model_type == "qwen3"
+        )
 
-        assert not (is_prefill and not last_only), "ERROR in run_model: is_prefill and not last_only"
-        
         if is_prefill or self.enforce_eager:
             if is_tree_decode:
                 self.eager_tree_decode_plan(input_ids, positions, tree_decode_step, cache_hits)
@@ -617,6 +966,14 @@ class ModelRunner:
                     outputs, eagle_acts = self.model(input_ids, positions) # target fwd when eagle enabled hooks into activations for eagle conditioning
                     logits = self.model.compute_logits(outputs, last_only)
                     return logits, eagle_acts  # return eagle_acts as conditioning vector for draft
+            elif use_dflash:
+                outputs, dflash_target_features = self.model(
+                    input_ids,
+                    positions,
+                    dflash_layer_ids=self.config.dflash_target_layer_ids,
+                )
+                logits = self.model.compute_logits(outputs, last_only)
+                return logits, dflash_target_features
             else: 
                 outputs = self.model(input_ids, positions)
                 logits = self.model.compute_logits(outputs, last_only)
@@ -659,8 +1016,12 @@ class ModelRunner:
 
         # Handle EAGLE returning (logits, conditioning_vector for next iter)
         conditioning = None
+        dflash_target_features = None
         if self.config.use_eagle:
             logits, conditioning = self.run_model(
+                input_ids, positions, is_prefill, last_only, hidden_states=hidden_states)
+        elif self.config.speculate and self.config.draft_backend in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"} and not self.is_draft:
+            logits, dflash_target_features = self.run_model(
                 input_ids, positions, is_prefill, last_only, hidden_states=hidden_states)
         else:
             logits = self.run_model(input_ids, positions, is_prefill, last_only, hidden_states=hidden_states)
@@ -675,11 +1036,14 @@ class ModelRunner:
             reset_context()
             if conditioning is not None:
                 return token_ids, conditioning
+            if dflash_target_features is not None:
+                return token_ids, dflash_target_features
             return (token_ids, logits) if draft_return_logits else token_ids
         else:
             reset_context()
             if conditioning is not None:
                 return logits, conditioning
+            if dflash_target_features is not None:
+                return logits, dflash_target_features
             return logits
     
-

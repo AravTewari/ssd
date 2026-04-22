@@ -1,0 +1,21 @@
+{
+  "quality_metrics": null,
+  "recommendation": {
+    "decision_rule_a": {
+      "by_batch": {},
+      "message": "Headroom recommendation unavailable because the required exact baseline/oracle modes were not run",
+      "triggered": false
+    },
+    "decision_rule_b": {
+      "by_batch": {},
+      "message": "Branch-bottleneck recommendation unavailable because the required predicted modes were not run",
+      "triggered": false
+    },
+    "decision_rule_c": {
+      "best_templates_by_batch": {},
+      "message": "Templates ranked by throughput, then cache-committed token fraction, then joint branch recall"
+    },
+    "recommended_next_step": "insufficient_matrix_a_for_recommendation"
+  },
+  "results": []
+}

@@ -40,6 +40,15 @@ def store_kvcache(key: torch.Tensor, value: torch.Tensor, k_cache: torch.Tensor,
     assert slot_mapping.numel() == N
     store_kvcache_kernel[(N,)](key, key.stride(0), value, value.stride(0), k_cache, v_cache, slot_mapping, D)
 
+
+def get_flash_attn_version(device: torch.device | None = None) -> int:
+    if not torch.cuda.is_available():
+        return 3
+    if device is None:
+        device = torch.device("cuda")
+    major, _minor = torch.cuda.get_device_capability(device)
+    return 4 if major >= 10 else 3
+
 class Attention(nn.Module):
 
     def __init__(
@@ -75,6 +84,7 @@ class Attention(nn.Module):
         q = q.view(-1, self.num_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
+        flash_attn_ver = get_flash_attn_version(q.device)
 
         k_cache, v_cache = self.k_cache, self.v_cache
 
@@ -90,7 +100,8 @@ class Attention(nn.Module):
             o = flash_attn_varlen_func(q, k, v,
                                        max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
                                        max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
-                                       softmax_scale=self.scale, causal=True)
+                                       softmax_scale=self.scale, causal=True,
+                                       ver=flash_attn_ver)
         else:
             # verify/glue decode: multi-query with cu_seqlens_q (K+1 or variable per seq)
             verify_or_glue = (
@@ -98,8 +109,11 @@ class Attention(nn.Module):
             )
             decode = not verify_or_glue
             tree_decode = (
-                decode and self.speculate and self.draft and self.draft_async
-                and not context.is_jit
+                context.tree_attention_mode is not None
+                or (
+                    decode and self.speculate and self.draft and self.draft_async
+                    and not context.is_jit
+                )
             )
 
             if verify_or_glue:
@@ -108,19 +122,30 @@ class Attention(nn.Module):
                                         cache_seqlens=context.context_lens, page_table=context.block_tables,
                                         softmax_scale=self.scale, causal=True,
                                         cu_seqlens_q=context.cu_seqlens_q, max_seqlen_q=context.max_seqlen_q,
+                                        ver=flash_attn_ver,
                                         )
 
             elif tree_decode:
                 if self.only_prefill_wrapper is not None:
                     prefill_wrapper = self.only_prefill_wrapper
                 else:
-                    mq_len = self.F * (self.K+1)
-                    bs = q.shape[0] // mq_len
+                    if context.block_tables is not None:
+                        bs = context.block_tables.size(0)
+                    elif context.context_lens is not None:
+                        bs = context.context_lens.numel()
+                    else:
+                        mq_len = self.F * (self.K + 1)
+                        bs = q.shape[0] // mq_len
                     wrapper_bs = None
                     for available_bs in sorted(self.prefill_wrappers.keys()):
                         if available_bs >= bs:
                             wrapper_bs = available_bs
                             break
+                    if wrapper_bs is None:
+                        raise RuntimeError(
+                            f"no FlashInfer prefill wrapper available for tree decode batch size bs={bs}; "
+                            f"available={sorted(self.prefill_wrappers.keys())}"
+                        )
                     prefill_wrapper = self.prefill_wrappers[wrapper_bs]
                 o = prefill_wrapper.run(q, (self.k_cache, self.v_cache))
             else: # single query decode
@@ -128,6 +153,7 @@ class Attention(nn.Module):
                 o = flash_attn_with_kvcache(q, k_cache, v_cache,
                                             cache_seqlens=context.context_lens, page_table=context.block_tables,
                                             softmax_scale=self.scale, causal=True,
+                                            ver=flash_attn_ver,
                                             )
 
         o = o.view(-1, self.num_heads * self.head_dim)

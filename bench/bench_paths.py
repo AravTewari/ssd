@@ -42,11 +42,22 @@ EAGLE3_QWEN_32B = os.environ.get(
     "SSD_EAGLE3_QWEN_32B",
     f"{HF_CACHE_DIR}/models--RedHatAI--Qwen3-32B-speculator.eagle3",
 )
-DEFAULT_DIFFUSION_DRAFT = os.environ.get(
-    "SSD_DIFFUSION_DRAFT_MODEL",
+DEFAULT_LLADA_DRAFT = os.environ.get(
+    "SSD_LLADA_DRAFT_MODEL",
+    f"{HF_CACHE_DIR}/models--GSAI-ML--LLaDA-8B-Instruct",
+)
+DEFAULT_DREAM_DRAFT = os.environ.get(
+    "SSD_DREAM_DRAFT_MODEL",
     f"{HF_CACHE_DIR}/models--Dream-org--Dream-v0-Instruct-7B",
 )
-DEFAULT_LLADA_DRAFT = DEFAULT_DIFFUSION_DRAFT
+DEFAULT_DFLASH_DRAFT = os.environ.get(
+    "SSD_DFLASH_DRAFT_MODEL",
+    f"{HF_CACHE_DIR}/models--z-lab--Qwen3-8B-DFlash-b16",
+)
+DEFAULT_DFLASH_PREDICTOR = os.environ.get(
+    "SSD_DFLASH_PREDICTOR",
+    f"{HF_CACHE_DIR}/dflash-predictors/qwen3-8b-dflash-b16",
+)
 
 MODELS = {
     "llama_70b": os.environ.get(

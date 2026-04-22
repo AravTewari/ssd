@@ -21,8 +21,14 @@ class Scheduler:
         self.max_model_len = config.max_model_len
         self.eos = config.eos
         self.speculate = config.speculate
+        self.draft_backend = config.draft_backend
+        self.ar_branch_cache = getattr(config, "ar_branch_cache", "on")
+        self.ar_branch_key_mode = getattr(config, "ar_branch_key_mode", "normal")
+        self.async_cache_expander_backend = getattr(config, "async_cache_expander_backend", "off")
+        self.async_cache_expander_hit_k = getattr(config, "async_cache_expander_hit_k", None)
         self.F = config.async_fan_out
         self.K = config.speculate_k
+        self.ddtree_tree_budget = getattr(config, "ddtree_tree_budget", 0)
         self.block_size = config.kvcache_block_size
         self.verbose = config.verbose
         self.draft_async = config.draft_async
@@ -58,6 +64,13 @@ class Scheduler:
 
     def bms_can_allocate(self, seq: Sequence) -> bool:
         return self.block_manager.can_allocate(seq) and (not self.speculate or self.draft_block_manager.can_allocate(seq))
+
+    def _target_lookahead_len(self) -> int:
+        if self.draft_backend in {"ddtree", "ddtree_ssd"}:
+            # DDTree target verify appends the compiled tree window, whose
+            # length is driven by the tree budget rather than flat speculate_k.
+            return max(self.K + 1, self.ddtree_tree_budget + 1)
+        return self.K + 1
 
     # what if we added an option to prefill jit
     def schedule(self) -> tuple[list[Sequence], bool]:
@@ -95,11 +108,33 @@ class Scheduler:
         async_spec = self.speculate and self.draft_async
         
         if async_spec:
-            target_lookahead_len = self.K + 1
-            # this will need to allow F_k strat as just sum(self.fan_out_list) when we add that 
-            draft_lookahead_len = compute_megaspec_lookahead(self.MQ_LEN, self.K)
+            if self.draft_backend == "ar" and self.async_cache_expander_backend != "off":
+                target_lookahead_len = self.async_cache_expander_hit_k + 1
+                # The hybrid Dream path can accept up to K_hit drafted tokens from
+                # the current round, then immediately background-populate the next
+                # AR cache object from that post-verify frontier. That one-round-
+                # ahead AR populate needs an additional K-token draft window.
+                draft_lookahead_len = self.async_cache_expander_hit_k + self.K + 1
+            else:
+                target_lookahead_len = self._target_lookahead_len()
+                if (
+                    self.draft_backend == "ar"
+                    and getattr(self, "ar_branch_key_mode", None) == "oracle"
+                ):
+                    # Oracle AR background cache population drafts one extra K-token
+                    # round from the post-verify frontier, so it needs room for the
+                    # current speculative window plus a full next-round draft.
+                    draft_lookahead_len = (2 * self.K) + 1
+                elif self.draft_backend in {"dflash_ssd", "ddtree_ssd"} or (
+                    self.draft_backend == "ar"
+                    and getattr(self, "ar_branch_cache", "on") == "off"
+                ):
+                    draft_lookahead_len = self.K + 1
+                else:
+                    # this will need to allow F_k strat as just sum(self.fan_out_list) when we add that 
+                    draft_lookahead_len = compute_megaspec_lookahead(self.MQ_LEN, self.K)
         elif sync_spec:
-            target_lookahead_len = self.K + 1
+            target_lookahead_len = self._target_lookahead_len()
             draft_lookahead_len = self.K + 1
         else: # draft doesn't matter 
             target_lookahead_len = 1
@@ -144,6 +179,12 @@ class Scheduler:
         seq.extend_count = 0
         seq.extend_eagle_acts = None
         seq.extend_token_ids = None
+        seq.last_dflash_target_feature = None
+        seq.extend_dflash_target_features = None
+        seq.extend_dflash_token_ids = None
+        seq.extend_dflash_count = 0
+        seq.frontier_version = 0
+        seq.dflash_cycle_idx = 0
 
     # non-speculative path, should handle completing a block here as well 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int], is_prefill: bool):
@@ -287,7 +328,8 @@ class Scheduler:
         seqs: list[Sequence],
         new_suffixes: list[list[int]],
         next_recovery_tokens: list[int],
-        eagle_acts: torch.Tensor | None = None
+        eagle_acts: torch.Tensor | None = None,
+        dflash_target_features: list[torch.Tensor] | None = None,
     ):
 
         for i, (seq, new_suffix, next_recovery_token) in enumerate(zip(seqs, new_suffixes, next_recovery_tokens)):
@@ -318,6 +360,24 @@ class Scheduler:
                 else:
                     seq.extend_eagle_acts = None
                     seq.extend_token_ids = None
+
+            if dflash_target_features is not None:
+                accepted_features = dflash_target_features[i]
+                if accepted_features is not None and accepted_features.numel() > 0:
+                    accepted_features = accepted_features[:len(new_suffix)].clone()
+                    seq.last_dflash_target_feature = accepted_features[-1]
+                    seq.extend_dflash_target_features = accepted_features
+                    seq.extend_dflash_count = len(new_suffix)
+                    seq.extend_dflash_token_ids = torch.tensor(
+                        new_suffix, dtype=torch.int64, device=accepted_features.device,
+                    )
+                else:
+                    seq.last_dflash_target_feature = None
+                    seq.extend_dflash_target_features = None
+                    seq.extend_dflash_count = 0
+                    seq.extend_dflash_token_ids = None
+            if self.draft_backend in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}:
+                seq.frontier_version += 1
 
             if finished:
                 if __debug__: print(f'Sequence {seq.seq_id} finished, deallocating and marking as done + removing from running', flush=True)

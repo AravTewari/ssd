@@ -3,12 +3,12 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import json
 from random import randint
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from transformers import AutoTokenizer
 try:
-    from ssd.paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT
+    from ssd.paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT, DEFAULT_DREAM_DRAFT, DEFAULT_DFLASH_DRAFT, DEFAULT_DFLASH_PREDICTOR
 except ImportError:
-    from bench_paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT
+    from bench_paths import DATASET_PATHS, HF_CACHE_DIR, EAGLE3_SPECFORGE_70B, EAGLE3_YUHUILI_8B, EAGLE3_QWEN_32B, DEFAULT_LLADA_DRAFT, DEFAULT_DREAM_DRAFT, DEFAULT_DFLASH_DRAFT, DEFAULT_DFLASH_PREDICTOR
 
 
 def _get_snapshot_path(base_path: str) -> str:
@@ -93,10 +93,15 @@ def _get_draft_model_path(args, cache_dir: str) -> str:
 
 def get_model_paths(args, cache_dir: str = HF_CACHE_DIR) -> Tuple[str, str, Optional[str]]:
     """Resolve model and draft paths (pointing to snapshot dirs with config.json)."""
-    if getattr(args, "draft_backend", "ar") == "llada_diffusion" and args.llama:
-        raise ValueError("llada_diffusion currently only supports Qwen targets")
-    if getattr(args, "draft_backend", "ar") == "llada_diffusion" and getattr(args, "draft", None) and not os.path.isdir(args.draft):
-        raise ValueError("llada_diffusion expects --draft to be a model directory when provided")
+    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd", "ddtree", "ddtree_ssd"} and args.llama:
+        raise ValueError(f"{args.draft_backend} currently only supports Qwen targets")
+    if getattr(args, "draft_backend", "ar") in {"llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd", "ddtree", "ddtree_ssd"} and getattr(args, "draft", None) and not os.path.isdir(args.draft):
+        raise ValueError(f"{args.draft_backend} expects --draft to be a model directory when provided")
+    if getattr(args, "draft_backend", "ar") in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}:
+        if args.size != "8":
+            raise ValueError(f"{args.draft_backend} currently only supports Qwen3-8B targets")
+        if args.gpus != 2:
+            raise ValueError(f"{args.draft_backend} currently requires --gpus 2")
 
     if args.llama:
         size_to_model = {
@@ -137,6 +142,10 @@ def get_model_paths(args, cache_dir: str = HF_CACHE_DIR) -> Tuple[str, str, Opti
     # Always resolve a draft path so callers can pass it through unchanged
     if getattr(args, "draft_backend", "ar") == "llada_diffusion":
         draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_LLADA_DRAFT
+    elif getattr(args, "draft_backend", "ar") == "dream_diffusion":
+        draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_DREAM_DRAFT
+    elif getattr(args, "draft_backend", "ar") in {"dflash", "dflash_ssd", "ddtree", "ddtree_ssd"}:
+        draft_base = args.draft if getattr(args, "draft", None) else DEFAULT_DFLASH_DRAFT
     elif getattr(args, "eagle", False) or getattr(args, "draft", None):
         draft_base = _get_draft_model_path(args, cache_dir)
     else:
@@ -153,6 +162,7 @@ def load_dataset_token_ids(
     num_prompts: int,
     input_len: int,
     use_chat_template: bool = False,
+    disable_thinking: bool = False,
 ) -> Optional[List[List[int]]]:
     """Load and tokenize dataset prompts to token ids, padding/truncating to target length.
 
@@ -179,10 +189,21 @@ def load_dataset_token_ids(
                 data = json.loads(line.strip())
                 text: str = data["text"]
                 if use_chat_template and hasattr(tokenizer, 'apply_chat_template'):
-                    tokens = tokenizer.apply_chat_template(
-                        [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": text}],
-                        add_generation_prompt=True,
-                    )
+                    messages = [
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": text},
+                    ]
+                    if disable_thinking:
+                        tokens = tokenizer.apply_chat_template(
+                            messages,
+                            add_generation_prompt=True,
+                            enable_thinking=False,
+                        )
+                    else:
+                        tokens = tokenizer.apply_chat_template(
+                            messages,
+                            add_generation_prompt=True,
+                        )
                 else:
                     tokens = tokenizer.encode(text, add_special_tokens=False)
 
@@ -200,11 +221,117 @@ def load_dataset_token_ids(
         return None
 
 
+def load_dataset_prompt_records(
+    dataset_name: str,
+    model_path: str,
+    num_prompts: int,
+    input_len: int,
+    prompt_offset: int = 0,
+    use_chat_template: bool = False,
+    disable_thinking: bool = False,
+    strict: bool = True,
+) -> Optional[List[Dict[str, Any]]]:
+    """Load tokenized prompt records with stable grouping metadata.
+
+    Each returned record includes:
+    - dataset_name
+    - prompt_index: source line index within the dataset file
+    - prompt_token_ids
+    - text
+    """
+    if dataset_name not in DATASET_PATHS:
+        msg = f"Unknown dataset {dataset_name}"
+        if strict:
+            raise ValueError(msg)
+        print(f"Warning: {msg}")
+        return None
+
+    dataset_file_path = DATASET_PATHS[dataset_name]
+    if not os.path.exists(dataset_file_path):
+        msg = f"Dataset file not found at {dataset_file_path}"
+        if strict:
+            raise FileNotFoundError(msg)
+        print(f"Warning: {msg}")
+        return None
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    prompt_records: List[Dict[str, Any]] = []
+    try:
+        with open(dataset_file_path, "r") as f:
+            for line_index, line in enumerate(f):
+                if line_index < prompt_offset:
+                    continue
+                if len(prompt_records) >= num_prompts:
+                    break
+                data = json.loads(line.strip())
+                text: str = data["text"]
+                if use_chat_template and hasattr(tokenizer, 'apply_chat_template'):
+                    messages = [
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": text},
+                    ]
+                    if disable_thinking:
+                        tokens = tokenizer.apply_chat_template(
+                            messages,
+                            add_generation_prompt=True,
+                            enable_thinking=False,
+                        )
+                    else:
+                        tokens = tokenizer.apply_chat_template(
+                            messages,
+                            add_generation_prompt=True,
+                        )
+                else:
+                    tokens = tokenizer.encode(text, add_special_tokens=False)
+
+                target_len = max(len(tokens), input_len)
+                prompt_records.append({
+                    "dataset_name": dataset_name,
+                    "prompt_index": line_index,
+                    "prompt_token_ids": tokens[:target_len],
+                    "text": text,
+                })
+        return prompt_records
+    except Exception:
+        if strict:
+            raise
+        return None
+
+
+def load_all_dataset_prompt_records(
+    model_path: str,
+    num_prompts_per_dataset: int,
+    input_len: int,
+    prompt_offset: int = 0,
+    use_chat_template: bool = False,
+    disable_thinking: bool = False,
+) -> List[Dict[str, Any]]:
+    datasets = ["humaneval", "alpaca", "gsm", "ultrafeedback"]
+    all_records: List[Dict[str, Any]] = []
+    for dataset_name in datasets:
+        print(f"Loading {num_prompts_per_dataset} prompt records from {dataset_name}...")
+        all_records.extend(
+            load_dataset_prompt_records(
+                dataset_name=dataset_name,
+                model_path=model_path,
+                num_prompts=num_prompts_per_dataset,
+                input_len=input_len,
+                prompt_offset=prompt_offset,
+                use_chat_template=use_chat_template,
+                disable_thinking=disable_thinking,
+                strict=True,
+            )
+        )
+    print(f"Total prompt records loaded: {len(all_records)}")
+    return all_records
+
+
 def load_all_dataset_token_ids(
     model_path: str,
     num_prompts_per_dataset: int,
     input_len: int,
     use_chat_template: bool = False,
+    disable_thinking: bool = False,
 ) -> List[List[int]]:
     """Load tokenized prompts from a union of datasets, falling back to random when needed."""
     datasets = ["humaneval", "alpaca", "gsm", "ultrafeedback"]
@@ -215,7 +342,9 @@ def load_all_dataset_token_ids(
             f"Loading {num_prompts_per_dataset} prompts from {dataset_name}...")
         dataset_prompts = load_dataset_token_ids(
             dataset_name, model_path, num_prompts_per_dataset, input_len,
-            use_chat_template=use_chat_template)
+            use_chat_template=use_chat_template,
+            disable_thinking=disable_thinking,
+        )
         if dataset_prompts is not None:
             all_prompts.extend(dataset_prompts)
         else:
@@ -264,11 +393,14 @@ def generate_benchmark_inputs(
         return None, prompt_token_ids, None
 
     use_chat_template = getattr(args, "chat_template", False) or getattr(args, "eagle", False)
+    disable_thinking = getattr(args, "draft_backend", "ar") in {"dflash", "dflash_ssd"}
 
     if getattr(args, "all", False):
         token_ids = load_all_dataset_token_ids(
             model_path, args.numseqs, args.input_len,
-            use_chat_template=use_chat_template)
+            use_chat_template=use_chat_template,
+            disable_thinking=disable_thinking,
+        )
         if not token_ids:
             print("Warning: All dataset loading failed, falling back to random tokens")
             token_ids = [[randint(0, 10000) for _ in range(
@@ -289,7 +421,9 @@ def generate_benchmark_inputs(
 
     dataset_prompts = load_dataset_token_ids(
         dataset_name, model_path, args.numseqs, args.input_len,
-        use_chat_template=use_chat_template)
+        use_chat_template=use_chat_template,
+        disable_thinking=disable_thinking,
+    )
     if dataset_prompts is None:
         token_ids = [[randint(0, 10000) for _ in range(args.input_len)]
                      for _ in range(args.numseqs)]

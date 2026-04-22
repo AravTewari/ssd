@@ -23,8 +23,30 @@ def parse_arguments():
     parser.add_argument("--qwen", action="store_true", help="Use Qwen models instead of Llama")
     parser.add_argument("--draft", type=str, default=None,
                         help="Draft model size (0.6 for Qwen-0.6B, 1 for Llama-1B) or path to draft model")
-    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion"], default="ar",
+    parser.add_argument("--draft-backend", type=str, choices=["ar", "llada_diffusion", "dream_diffusion", "dflash", "dflash_ssd", "ddtree", "ddtree_ssd"], default="ar",
                         help="Draft backend implementation to use")
+    parser.add_argument("--dflash-predictor", type=str, default=None,
+                        help="Predictor checkpoint directory for dflash_ssd")
+    parser.add_argument("--dflash-context-mode", type=str, choices=["predicted", "exact"], default="predicted",
+                        help="DFlash SSD conditioning mode for diagnostics")
+    parser.add_argument("--dflash-branch-cache", type=str, choices=["on", "off"], default="on",
+                        help="Enable or disable DFlash SSD branch-cache population")
+    parser.add_argument("--dflash-branch-key-mode", type=str, choices=["normal", "oracle"], default="normal",
+                        help="DFlash SSD branch-key policy")
+    parser.add_argument("--dflash-diagnostics", action="store_true",
+                        help="Record per-cycle DFlash SSD diagnostics")
+    parser.add_argument("--ddtree-tree-budget", type=int, default=16,
+                        help="Node budget for DDTree construction")
+    parser.add_argument("--ddtree-frontier-count", type=int, default=1,
+                        help="Number of next-frontier DDTree candidates to keep in SSD mode")
+    parser.add_argument("--ddtree-context-mode", type=str, choices=["predicted", "exact"], default="predicted",
+                        help="DDTree SSD conditioning mode")
+    parser.add_argument("--ddtree-cache", type=str, choices=["on", "off"], default="on",
+                        help="Enable or disable DDTree SSD outer cache")
+    parser.add_argument("--ddtree-frontier-mode", type=str, choices=["surrogate", "oracle"], default="surrogate",
+                        help="DDTree SSD next-frontier ranking mode")
+    parser.add_argument("--ddtree-diagnostics", action="store_true",
+                        help="Record DDTree SSD diagnostics")
 
     # Execution configuration
     parser.add_argument("--eager", action="store_true", help="Use eager execution (disable CUDA graphs)")
@@ -40,7 +62,7 @@ def parse_arguments():
     parser.add_argument("--flh", type=int, nargs='+', default=None, help="Fan out list (e.g., --flh 1 3 4 becomes [1, 3, 4])")
     parser.add_argument("--flm", type=int, nargs='+', default=None, help="Fan out list miss (e.g., --flm 1 3 4 becomes [1, 3, 4])")
     parser.add_argument("--backup", type=str, choices=["jit", "fast"], default="jit", help="Backup strategy (jit or fast)")
-    parser.add_argument("--dsteps", type=int, default=128, help="Number of diffusion denoising steps for llada_diffusion")
+    parser.add_argument("--dsteps", type=int, default=128, help="Number of diffusion denoising steps for diffusion draft backends")
 
     # Memory and batching configuration
     parser.add_argument("--block_sz", type=int, default=256, help="KV cache block size (see config.py: kvcache_block_size)")
@@ -88,12 +110,36 @@ def parse_arguments():
         assert args.llama, "Eagle currently only supports llama models"
         assert args.temp == 0.0 and args.dtemp is None, "Eagle currently only supports greedy decoding (temp=0)"
         assert getattr(args, 'async', False), "Eagle currently only supports async speculative decoding"
-    if args.draft_backend == "llada_diffusion":
-        assert args.spec, "--draft-backend llada_diffusion requires --spec"
-        assert not getattr(args, "async", False), "--draft-backend llada_diffusion does not support --async"
+    if args.draft_backend in {"llada_diffusion", "dream_diffusion"}:
+        assert args.spec, f"--draft-backend {args.draft_backend} requires --spec"
+        assert not getattr(args, "async", False), f"--draft-backend {args.draft_backend} does not support --async"
         assert args.temp == 0.0 and args.dtemp in (None, 0, 0.0), (
-            "--draft-backend llada_diffusion only supports greedy decoding"
+            f"--draft-backend {args.draft_backend} only supports greedy decoding"
         )
+    if args.draft_backend == "dflash":
+        assert args.spec, "--draft-backend dflash requires --spec"
+        assert args.qwen and args.size == "8", "dflash currently only supports Qwen3-8B targets"
+        assert args.gpus == 2, "dflash currently requires --gpus 2"
+    if args.draft_backend == "dflash_ssd":
+        assert args.spec, "--draft-backend dflash_ssd requires --spec"
+        assert getattr(args, "async", False), "--draft-backend dflash_ssd requires --async"
+        assert args.qwen and args.size == "8", "dflash_ssd currently only supports Qwen3-8B targets"
+        assert args.gpus == 2, "dflash_ssd currently requires --gpus 2"
+        assert args.dflash_predictor is not None, "--draft-backend dflash_ssd requires --dflash-predictor"
+    if args.draft_backend == "ddtree":
+        assert args.spec, "--draft-backend ddtree requires --spec"
+        assert not getattr(args, "async", False), "--draft-backend ddtree does not support --async"
+        assert args.qwen and args.size == "8", "ddtree currently only supports Qwen3-8B targets"
+        assert args.gpus == 2, "ddtree currently requires --gpus 2"
+        assert args.temp == 0.0 and args.dtemp in (None, 0, 0.0), "ddtree is greedy-only in v1"
+    if args.draft_backend == "ddtree_ssd":
+        assert args.spec, "--draft-backend ddtree_ssd requires --spec"
+        assert getattr(args, "async", False), "--draft-backend ddtree_ssd requires --async"
+        assert args.qwen and args.size == "8", "ddtree_ssd currently only supports Qwen3-8B targets"
+        assert args.gpus == 2, "ddtree_ssd currently requires --gpus 2"
+        assert args.temp == 0.0 and args.dtemp in (None, 0, 0.0), "ddtree_ssd is greedy-only in v1"
+        if args.ddtree_context_mode == "predicted":
+            assert args.dflash_predictor is not None, "--draft-backend ddtree_ssd with predicted context requires --dflash-predictor"
     return args
 
 
@@ -121,9 +167,27 @@ def create_run_name(args):
     draft_str = f"_draft{args.draft}" if args.draft is not None else "_nodraft"
     k_str = f"_k{args.k}"
     f_str = f"_f{args.f}"
-    dsteps_str = f"_dsteps{args.dsteps}" if args.draft_backend == "llada_diffusion" else ""
+    dsteps_str = f"_dsteps{args.dsteps}" if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else ""
+    predictor_str = "_pred" if args.draft_backend == "dflash_ssd" else ""
+    dflash_diag_str = ""
+    if args.draft_backend == "dflash_ssd":
+        if args.dflash_context_mode != "predicted":
+            dflash_diag_str += f"_ctx{args.dflash_context_mode}"
+        if args.dflash_branch_cache != "on":
+            dflash_diag_str += f"_cache{args.dflash_branch_cache}"
+        if args.dflash_branch_key_mode != "normal":
+            dflash_diag_str += f"_bkey{args.dflash_branch_key_mode}"
+    if args.draft_backend == "ddtree_ssd":
+        predictor_str = "_pred" if args.ddtree_context_mode == "predicted" else ""
+        dflash_diag_str += f"_tb{args.ddtree_tree_budget}_fc{args.ddtree_frontier_count}"
+        if args.ddtree_context_mode != "predicted":
+            dflash_diag_str += f"_ctx{args.ddtree_context_mode}"
+        if args.ddtree_cache != "on":
+            dflash_diag_str += f"_cache{args.ddtree_cache}"
+        if args.ddtree_frontier_mode != "surrogate":
+            dflash_diag_str += f"_frontier{args.ddtree_frontier_mode}"
 
-    return args.name if args.name else f"{model_type}_size{args.size}_{spec_mode_str}{async_mode_str}{jit_mode_str}{backend_str}_b{args.b}{k_str}{f_str}{dsteps_str}{draft_str}{temp_str}{sampler_x_str}{example_str}{humaneval_str}{alpaca_str}{c4_str}{ultrafeedback_str}{random_str}{all_str}{gsm_str}"
+    return args.name if args.name else f"{model_type}_size{args.size}_{spec_mode_str}{async_mode_str}{jit_mode_str}{backend_str}{predictor_str}{dflash_diag_str}_b{args.b}{k_str}{f_str}{dsteps_str}{draft_str}{temp_str}{sampler_x_str}{example_str}{humaneval_str}{alpaca_str}{c4_str}{ultrafeedback_str}{random_str}{all_str}{gsm_str}"
 
 
 def initialize_wandb(args, run_name):
@@ -152,7 +216,16 @@ def initialize_wandb(args, run_name):
             "numseqs": args.numseqs,
             "draft_model": args.draft,
             "draft_backend": args.draft_backend,
-            "diffusion_steps": args.dsteps if args.draft_backend == "llada_diffusion" else None,
+            "dflash_predictor": args.dflash_predictor,
+            "dflash_context_mode": args.dflash_context_mode if args.draft_backend == "dflash_ssd" else None,
+            "dflash_branch_cache": args.dflash_branch_cache if args.draft_backend == "dflash_ssd" else None,
+            "dflash_branch_key_mode": args.dflash_branch_key_mode if args.draft_backend == "dflash_ssd" else None,
+            "ddtree_tree_budget": args.ddtree_tree_budget if args.draft_backend in {"ddtree", "ddtree_ssd"} else None,
+            "ddtree_frontier_count": args.ddtree_frontier_count if args.draft_backend == "ddtree_ssd" else None,
+            "ddtree_context_mode": args.ddtree_context_mode if args.draft_backend == "ddtree_ssd" else None,
+            "ddtree_cache": args.ddtree_cache if args.draft_backend == "ddtree_ssd" else None,
+            "ddtree_frontier_mode": args.ddtree_frontier_mode if args.draft_backend == "ddtree_ssd" else None,
+            "diffusion_steps": args.dsteps if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else None,
             "b": args.b,
             "block_size": args.block_sz,
             "eager": args.eager,
@@ -189,6 +262,17 @@ def create_llm_kwargs(args, draft_path):
         max_steps=args.max_steps,
         draft_backend=args.draft_backend,
         diffusion_steps=args.dsteps,
+        dflash_predictor=args.dflash_predictor,
+        dflash_context_mode=args.dflash_context_mode,
+        dflash_branch_cache=args.dflash_branch_cache,
+        dflash_branch_key_mode=args.dflash_branch_key_mode,
+        dflash_enable_diagnostics=args.dflash_diagnostics,
+        ddtree_tree_budget=args.ddtree_tree_budget,
+        ddtree_frontier_count=args.ddtree_frontier_count,
+        ddtree_context_mode=args.ddtree_context_mode,
+        ddtree_cache=args.ddtree_cache,
+        ddtree_frontier_mode=args.ddtree_frontier_mode,
+        ddtree_enable_diagnostics=args.ddtree_diagnostics,
     )
 
     if args.flh is not None:
@@ -229,6 +313,26 @@ def log_wandb_metrics(args, metrics, total_tokens, total_time, throughput, model
         if "diffusion_draft_step_times" in metrics and metrics["diffusion_draft_step_times"]:
             wandb_metrics["metrics_avg_diffusion_draft_step_time_ms"] = (
                 sum(metrics["diffusion_draft_step_times"]) * 1000 / len(metrics["diffusion_draft_step_times"])
+            )
+        if "dflash_draft_step_times" in metrics and metrics["dflash_draft_step_times"]:
+            wandb_metrics["metrics_avg_dflash_draft_step_time_ms"] = (
+                sum(metrics["dflash_draft_step_times"]) * 1000 / len(metrics["dflash_draft_step_times"])
+            )
+        if "dflash_predictor_times" in metrics and metrics["dflash_predictor_times"]:
+            wandb_metrics["metrics_avg_dflash_predictor_time_ms"] = (
+                sum(metrics["dflash_predictor_times"]) * 1000 / len(metrics["dflash_predictor_times"])
+            )
+        if "ddtree_draft_step_times" in metrics and metrics["ddtree_draft_step_times"]:
+            wandb_metrics["metrics_avg_ddtree_step_time_ms"] = (
+                sum(metrics["ddtree_draft_step_times"]) * 1000 / len(metrics["ddtree_draft_step_times"])
+            )
+        if "ddtree_tree_build_times" in metrics and metrics["ddtree_tree_build_times"]:
+            wandb_metrics["metrics_avg_ddtree_tree_build_time_ms"] = (
+                sum(metrics["ddtree_tree_build_times"]) * 1000 / len(metrics["ddtree_tree_build_times"])
+            )
+        if "ddtree_tree_compile_times" in metrics and metrics["ddtree_tree_compile_times"]:
+            wandb_metrics["metrics_avg_ddtree_tree_compile_time_ms"] = (
+                sum(metrics["ddtree_tree_compile_times"]) * 1000 / len(metrics["ddtree_tree_compile_times"])
             )
 
         if "cache_hits" in metrics and metrics["cache_hits"]:
@@ -282,6 +386,14 @@ def reconfigure_engine(llm, b=None, diffusion_steps=None):
             llm.diffusion_adapter.config.diffusion_steps = diffusion_steps
 
 
+def load_sweep_configs(args):
+    if args.sweep:
+        sweep_configs = json.loads(args.sweep)
+        assert isinstance(sweep_configs, list), "--sweep must be a JSON list of dicts"
+        return sweep_configs
+    return [{}]
+
+
 def main():
     args = parse_arguments()
     seed(0)
@@ -306,6 +418,10 @@ def main():
         max_new_tokens=args.output_len,
     ) for _ in range(num_reqs)]
 
+    sweep_configs = load_sweep_configs(args)
+    max_sweep_b = max((cfg.get("b", args.b) for cfg in sweep_configs), default=args.b)
+    initial_b = max(args.b, max_sweep_b)
+
     if prompts:
         for i, prompt in enumerate(prompts):
             if isinstance(prompt, str):
@@ -319,19 +435,17 @@ def main():
 
     # Create LLM (once, reused across sweep configs)
     llm_kwargs = create_llm_kwargs(args, draft_path)
+    llm_kwargs["max_num_seqs"] = initial_b
     if args.eagle:
         llm_kwargs['use_eagle'] = True
     if args.debug:
         llm_kwargs['debug_mode'] = True
 
     llm = LLM(model_path, **llm_kwargs)
-
-    # Build sweep configs
-    if args.sweep:
-        sweep_configs = json.loads(args.sweep)
-        assert isinstance(sweep_configs, list), "--sweep must be a JSON list of dicts"
-    else:
-        sweep_configs = [{}]
+    if args.draft_backend in {"dflash", "dflash_ssd"}:
+        args.k = llm.config.speculate_k
+        args.eager = llm.config.enforce_eager
+        args.block_sz = llm.config.kvcache_block_size
 
     sweep_results = []
     for si, sweep_cfg in enumerate(sweep_configs):
@@ -384,7 +498,7 @@ def main():
             jit_mode = " + JIT" if args.backup == "jit" else ""
             x_mode = f" + X({args.x})" if args.x else ""
             backend_mode = f" + Backend({args.draft_backend})" if args.spec else ""
-            diffusion_mode = f" + DSteps({dsteps})" if args.draft_backend == "llada_diffusion" else ""
+            diffusion_mode = f" + DSteps({dsteps})" if args.draft_backend in {"llada_diffusion", "dream_diffusion"} else ""
             full_mode = mode + spec_mode + async_mode + jit_mode + x_mode + backend_mode + diffusion_mode
 
             print(f"Model: {model_name}, Mode: {full_mode}, Total: {total_tokens}tok, Time: {total_time:.2f}s, Total Throughput: {throughput:.2f}tok/s")
@@ -399,6 +513,14 @@ def main():
                 "diffusion_draft_ms": (
                     sum(metrics["diffusion_draft_step_times"]) * 1000 / len(metrics["diffusion_draft_step_times"])
                     if metrics.get("diffusion_draft_step_times") else None
+                ),
+                "dflash_draft_ms": (
+                    sum(metrics["dflash_draft_step_times"]) * 1000 / len(metrics["dflash_draft_step_times"])
+                    if metrics.get("dflash_draft_step_times") else None
+                ),
+                "dflash_predictor_ms": (
+                    sum(metrics["dflash_predictor_times"]) * 1000 / len(metrics["dflash_predictor_times"])
+                    if metrics.get("dflash_predictor_times") else None
                 ),
             })
 
@@ -444,6 +566,10 @@ def main():
             print(f"Accepted suffix mean (incl recovery): {best['accepted_suffix']:.2f}")
         if best["diffusion_draft_ms"] is not None:
             print(f"Mean diffusion draft step time: {best['diffusion_draft_ms']:.2f}ms")
+        if best["dflash_draft_ms"] is not None:
+            print(f"Mean DFlash draft step time: {best['dflash_draft_ms']:.2f}ms")
+        if best["dflash_predictor_ms"] is not None:
+            print(f"Mean DFlash predictor time: {best['dflash_predictor_ms']:.2f}ms")
 
     print(f'Engine exited!')
     sys.exit(0)

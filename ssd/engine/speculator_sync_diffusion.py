@@ -1,6 +1,7 @@
+from typing import Any
+
 import torch
 
-from ssd.engine.diffusion_draft_adapter import LLaDADiffusionAdapter
 from ssd.engine.helpers.speculate_types import SpeculateResult, VerifyResult, SpeculatorBase
 from ssd.engine.sequence import Sequence
 
@@ -10,7 +11,7 @@ class SpeculatorSyncDiffusion(SpeculatorBase):
         self,
         lookahead: int,
         device: torch.device,
-        diffusion_adapter: LLaDADiffusionAdapter,
+        diffusion_adapter: Any,
     ):
         super().__init__(lookahead, device)
         self.diffusion_adapter = diffusion_adapter

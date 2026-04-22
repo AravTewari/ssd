@@ -1,6 +1,5 @@
 import argparse
 from pathlib import Path
-from transformers import AutoTokenizer
 
 def parse_args():
     try:
@@ -14,6 +13,8 @@ def parse_args():
                         help="Target model snapshot directory")
     parser.add_argument("--draft", type=str, default=None,
                         help="LLaDA draft model directory")
+    parser.add_argument("--tokenizer-path", type=str, default=None,
+                        help="Optional tokenizer path override used for compatibility checks")
     parser.add_argument("--prompt", type=str, default="Explain speculative decoding in one sentence.",
                         help="Prompt text to seed the diffusion draft")
     parser.add_argument("--b", type=int, default=1,
@@ -32,7 +33,7 @@ def ensure_model_dir(path: str, label: str):
         raise FileNotFoundError(f"{label} path does not exist or is not a directory: {path}")
 
 
-def pick_recovery_token(tokenizer: AutoTokenizer) -> int:
+def pick_recovery_token(tokenizer) -> int:
     candidates = [
         " the",
         "Speculative",
@@ -66,7 +67,8 @@ def main():
     ensure_model_dir(args.draft, "Draft")
 
     device = torch.device(args.device)
-    target_tokenizer = AutoTokenizer.from_pretrained(args.target, use_fast=True)
+    tokenizer_path = args.tokenizer_path or args.target
+    target_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True, trust_remote_code=True)
     if target_tokenizer.pad_token_id is None and target_tokenizer.eos_token_id is not None:
         target_tokenizer.pad_token = target_tokenizer.eos_token
 
@@ -111,12 +113,12 @@ def main():
     result = speculator.speculate(seqs, verify_result=None)
 
     expected_spec_shape = (args.b, args.k + 1)
+    expected_logits_shape = (args.b, args.k, adapter.model_vocab_size)
     assert tuple(result.speculations.shape) == expected_spec_shape, (
         f"Expected speculations shape {expected_spec_shape}, got {tuple(result.speculations.shape)}"
     )
-    # logits_q has model vocab dim (may include extra special tokens beyond tokenizer.vocab_size)
-    assert result.logits_q.shape[0] == args.b and result.logits_q.shape[1] == args.k, (
-        f"Expected logits_q shape ({args.b}, {args.k}, V), got {tuple(result.logits_q.shape)}"
+    assert tuple(result.logits_q.shape) == expected_logits_shape, (
+        f"Expected logits_q shape {expected_logits_shape}, got {tuple(result.logits_q.shape)}"
     )
     assert torch.isfinite(result.logits_q.float()).all(), "logits_q contains non-finite values"
 
@@ -127,10 +129,13 @@ def main():
     print("LLaDA diffusion smoke test passed")
     print(f"target={args.target}")
     print(f"draft={args.draft}")
+    print(f"tokenizer_path={tokenizer_path}")
     print(f"device={device}")
     print(f"batch={args.b} k={args.k} dsteps={args.dsteps}")
     print(f"speculations_shape={tuple(result.speculations.shape)}")
     print(f"logits_q_shape={tuple(result.logits_q.shape)}")
+    print(f"target_tokenizer_size={len(target_tokenizer)}")
+    print(f"draft_model_vocab_size={adapter.model_vocab_size}")
     if metrics["diffusion_draft_step_times"]:
         avg_ms = sum(metrics["diffusion_draft_step_times"]) * 1000 / len(metrics["diffusion_draft_step_times"])
         print(f"avg_diffusion_step_ms={avg_ms:.2f}")

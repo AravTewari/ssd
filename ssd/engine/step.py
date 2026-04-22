@@ -61,19 +61,31 @@ class SpecDecodeStep(InferenceStep):
         speculator: SpeculatorBase,
         verifier: VerifierBase,
         eagle: bool,
+        dflash: bool,
         tokenizer: AutoTokenizer,
         async_spec: bool,
+        ar_branch_key_mode: str = "normal",
+        dflash_branch_key_mode: str = "normal",
+        metrics: dict | None = None,
+        enable_dflash_diagnostics: bool = False,
+        enable_ddtree_diagnostics: bool = False,
     ):
         super().__init__(scheduler)
         self.speculator = speculator
         self.verifier = verifier
         self.eagle = eagle
+        self.dflash = dflash
         self.tokenizer = tokenizer
         self.async_spec = async_spec
+        self.ar_branch_key_mode = ar_branch_key_mode
+        self.dflash_branch_key_mode = dflash_branch_key_mode
+        self.metrics = metrics
+        self.enable_dflash_diagnostics = enable_dflash_diagnostics
+        self.enable_ddtree_diagnostics = enable_ddtree_diagnostics
 
     def prefill(self, seqs: list[Sequence]) -> int:
         # When doing async speculation and not Eagle, we can do draft and target prefills in parallel.
-        if not self.eagle and self.async_spec:
+        if not self.eagle and not self.dflash and self.async_spec:
             empty_verify_result = VerifyResult([], [], None)
             self.speculator.prefill(seqs, empty_verify_result)
             verify_result = self.verifier.prefill(seqs, eagle=False)
@@ -90,6 +102,7 @@ class SpecDecodeStep(InferenceStep):
 
     def decode(self, seqs: list[Sequence]) -> int:
         _prof = os.environ.get("SSD_PROFILE", "0") == "1"
+        cycle_t0 = perf_counter()
         if _prof:
             torch.cuda.synchronize()
             _t0 = perf_counter()
@@ -107,23 +120,47 @@ class SpecDecodeStep(InferenceStep):
             eagle_acts=eagle_sentinel,
         )
         #### STEP 1: SPECULATE ####
+        speculate_t0 = perf_counter()
         speculate_result = self.speculator.speculate(seqs, in_verify_result)
+        speculate_t1 = perf_counter()
 
         if _prof:
             torch.cuda.synchronize()
             _t1 = perf_counter()
 
         if __debug__:
-            speculations = speculate_result.speculations
-            print(f"[SpecDecodeStep] speculations: {speculations}", flush=True)
-            speculations_list = speculations.tolist()
+            if speculate_result.ddtree_entries is not None:
+                for i, entry in enumerate(speculate_result.ddtree_entries):
+                    print(
+                        f"[SpecDecodeStep] ddtree {i}: root={entry.recovery_token} nodes={entry.num_nodes}",
+                        flush=True,
+                    )
+            else:
+                speculations = speculate_result.speculations
+                print(f"[SpecDecodeStep] speculations: {speculations}", flush=True)
+                speculations_list = speculations.tolist()
 
-            for i, speculation in enumerate(speculations_list):
-                decoded_tokens = decode_tokens(speculation, self.tokenizer)
-                print(f"[SpecDecodeStep] speculation {i}: {decoded_tokens}", flush=True)
+                for i, speculation in enumerate(speculations_list):
+                    decoded_tokens = decode_tokens(speculation, self.tokenizer)
+                    print(f"[SpecDecodeStep] speculation {i}: {decoded_tokens}", flush=True)
 
         #### STEP 2: VERIFY ####
         out_verify_result = self.verifier.verify(seqs, speculate_result, eagle=self.eagle)
+        verify_t1 = perf_counter()
+
+        feedback_t0 = perf_counter()
+        if self.async_spec and hasattr(self.speculator, "post_verify_feedback"):
+            if speculate_result.ddtree_entries is not None:
+                self.speculator.post_verify_feedback(seqs, out_verify_result, speculate_result.ddtree_diag)
+            elif (
+                self.dflash
+                and (self.enable_dflash_diagnostics or self.dflash_branch_key_mode == "oracle")
+                and speculate_result.dflash_diag is not None
+            ):
+                self.speculator.post_verify_feedback(seqs, out_verify_result, speculate_result.dflash_diag)
+            elif not self.dflash and self.ar_branch_key_mode == "oracle":
+                self.speculator.post_verify_feedback(seqs, out_verify_result)
+        feedback_t1 = perf_counter()
 
         if _prof:
             torch.cuda.synchronize()
@@ -150,7 +187,159 @@ class SpecDecodeStep(InferenceStep):
             out_verify_result.new_suffixes,
             out_verify_result.recovery_tokens,
             eagle_acts=out_verify_result.eagle_acts if self.eagle else None,
+            dflash_target_features=out_verify_result.dflash_target_features,
         )
+
+        if self.async_spec and not self.dflash and speculate_result.ddtree_entries is None:
+            draft_service_s = speculate_t1 - speculate_t0
+            post_verify_feedback_s = feedback_t1 - feedback_t0
+            if self.metrics is not None:
+                self.metrics["ar_draft_service_times"].append(draft_service_s)
+                self.metrics["ar_post_verify_feedback_times"].append(post_verify_feedback_s)
+                cache_hits = speculate_result.cache_hits.tolist() if speculate_result.cache_hits is not None else [0] * len(seqs)
+                target_verify_ms = (out_verify_result.target_verify_s or max(verify_t1 - speculate_t1, 0.0)) * 1000.0
+                total_cycle_ms = (perf_counter() - cycle_t0) * 1000.0
+                for row_idx, seq in enumerate(seqs):
+                    accepted_len = len(out_verify_result.new_suffixes[row_idx])
+                    cache_hit = bool(cache_hits[row_idx])
+                    self.metrics["ar_cycle_diagnostics"].append(
+                        {
+                            "seq_id": seq.seq_id,
+                            "batch_size": len(seqs),
+                            "cycle_idx": seq.dflash_cycle_idx,
+                            "accepted_len": accepted_len,
+                            "recovery_token": int(out_verify_result.recovery_tokens[row_idx]),
+                            "cache_hit": cache_hit,
+                            "draft_service_ms": draft_service_s * 1000.0,
+                            "post_verify_feedback_ms": post_verify_feedback_s * 1000.0,
+                            "target_verify_ms": target_verify_ms,
+                            "total_cycle_ms": total_cycle_ms,
+                            "tokens_committed_this_cycle": accepted_len,
+                        }
+                    )
+            for seq in seqs:
+                seq.dflash_cycle_idx += 1
+
+        if speculate_result.ddtree_entries is not None and speculate_result.ddtree_diag is not None:
+            diag = speculate_result.ddtree_diag
+            if self.metrics is not None:
+                self.metrics["ddtree_draft_step_times"].append(diag.total_dflash_s)
+                self.metrics["ddtree_tree_build_times"].append(diag.total_tree_build_s)
+            if self.scheduler.draft_backend == "ddtree_ssd" and self.metrics is not None and self.enable_ddtree_diagnostics:
+                target_verify_ms = (out_verify_result.target_verify_s or 0.0) * 1000.0
+                total_cycle_ms = (perf_counter() - cycle_t0) * 1000.0
+                transport_ms = diag.total_transport_s * 1000.0
+                cache_hits = speculate_result.cache_hits.tolist() if speculate_result.cache_hits is not None else [0] * len(seqs)
+                for row_idx, seq in enumerate(seqs):
+                    accepted_len = len(out_verify_result.new_suffixes[row_idx])
+                    cache_hit = bool(cache_hits[row_idx])
+                    fallback_used = bool(diag.fallback_used[row_idx]) if diag.fallback_used is not None else False
+                    verified_node_count = (
+                        None
+                        if out_verify_result.ddtree_verified_node_counts is None
+                        else int(out_verify_result.ddtree_verified_node_counts[row_idx])
+                    )
+                    tree_node_count = (
+                        None
+                        if speculate_result.ddtree_entries is None
+                        else int(speculate_result.ddtree_entries[row_idx].num_nodes)
+                    )
+                    self.metrics["ddtree_cycle_diagnostics"].append(
+                        {
+                            "seq_id": seq.seq_id,
+                            "batch_size": len(seqs),
+                            "cycle_idx": seq.dflash_cycle_idx,
+                            "accepted_len": accepted_len,
+                            "recovery_token": int(out_verify_result.recovery_tokens[row_idx]),
+                            "cache_hit": cache_hit,
+                            "fallback_used": fallback_used,
+                            "frontier_candidate_count": (
+                                None if diag.frontier_candidate_count is None else int(diag.frontier_candidate_count[row_idx])
+                            ),
+                            "actual_frontier_rank": (
+                                None if diag.actual_frontier_rank is None else diag.actual_frontier_rank[row_idx]
+                            ),
+                            "committed_tokens_from_cache": accepted_len if cache_hit else 0,
+                            "committed_tokens_from_fallback": accepted_len if fallback_used else 0,
+                            "ddtree_draft_ms": diag.total_dflash_s * 1000.0,
+                            "tree_build_ms": diag.total_tree_build_s * 1000.0,
+                            "predictor_ms": diag.total_predictor_s * 1000.0,
+                            "target_verify_ms": target_verify_ms,
+                            "cache_lookup_ms": diag.cache_lookup_s * 1000.0,
+                            "transport_ms": transport_ms,
+                            "total_cycle_ms": total_cycle_ms,
+                            "tokens_committed_this_cycle": accepted_len,
+                            "verified_node_count": verified_node_count,
+                            "tree_node_count": tree_node_count,
+                        }
+                    )
+            for seq in seqs:
+                seq.dflash_cycle_idx += 1
+
+        if self.dflash and self.async_spec and speculate_result.dflash_diag is not None:
+            diag = speculate_result.dflash_diag
+            if self.metrics is not None:
+                self.metrics["dflash_draft_step_times"].append(diag.total_dflash_s)
+                self.metrics["dflash_predictor_times"].append(diag.total_predictor_s)
+            if self.enable_dflash_diagnostics and self.metrics is not None:
+                cache_hits = speculate_result.cache_hits.tolist() if speculate_result.cache_hits is not None else [0] * len(seqs)
+                target_verify_ms = (out_verify_result.target_verify_s or 0.0) * 1000.0
+                total_cycle_ms = (perf_counter() - cycle_t0) * 1000.0
+                transport_ms = diag.total_transport_s * 1000.0
+                for row_idx, seq in enumerate(seqs):
+                    accepted_len = len(out_verify_result.new_suffixes[row_idx])
+                    cache_hit = bool(cache_hits[row_idx])
+                    fallback_used = bool(diag.fallback_used[row_idx]) if diag.fallback_used is not None else False
+                    self.metrics["dflash_cycle_diagnostics"].append(
+                        {
+                            "seq_id": seq.seq_id,
+                            "batch_size": len(seqs),
+                            "cycle_idx": seq.dflash_cycle_idx,
+                            "accepted_len": accepted_len,
+                            "recovery_token": int(out_verify_result.recovery_tokens[row_idx]),
+                            "cache_hit": cache_hit,
+                            "fallback_used": fallback_used,
+                            "num_branches_generated": (
+                                int(diag.num_branches_generated[row_idx])
+                                if diag.num_branches_generated is not None else 0
+                            ),
+                            "true_branch_rank": (
+                                None if diag.true_branch_rank is None else diag.true_branch_rank[row_idx]
+                            ),
+                            "committed_tokens_from_cache": accepted_len if cache_hit else 0,
+                            "committed_tokens_from_fallback": accepted_len if fallback_used else 0,
+                            "actual_accept_supported": (
+                                None if diag.actual_accept_supported is None else bool(diag.actual_accept_supported[row_idx])
+                            ),
+                            "actual_recovery_rank_given_accept": (
+                                None
+                                if diag.actual_recovery_rank_given_accept is None
+                                else diag.actual_recovery_rank_given_accept[row_idx]
+                            ),
+                            "joint_branch_supported": (
+                                None if diag.joint_branch_supported is None else bool(diag.joint_branch_supported[row_idx])
+                            ),
+                            "recovery_entropy_at_actual_accept": (
+                                None
+                                if diag.recovery_entropy_at_actual_accept is None
+                                else diag.recovery_entropy_at_actual_accept[row_idx]
+                            ),
+                            "recovery_top1_margin_at_actual_accept": (
+                                None
+                                if diag.recovery_top1_margin_at_actual_accept is None
+                                else diag.recovery_top1_margin_at_actual_accept[row_idx]
+                            ),
+                            "predictor_ms": diag.total_predictor_s * 1000.0,
+                            "dflash_ms": diag.total_dflash_s * 1000.0,
+                            "target_verify_ms": target_verify_ms,
+                            "cache_lookup_ms": diag.cache_lookup_s * 1000.0,
+                            "transport_ms": transport_ms,
+                            "total_cycle_ms": total_cycle_ms,
+                            "tokens_committed_this_cycle": accepted_len,
+                        }
+                    )
+            for seq in seqs:
+                seq.dflash_cycle_idx += 1
 
         if _prof:
             torch.cuda.synchronize()
