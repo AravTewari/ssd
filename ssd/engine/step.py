@@ -120,7 +120,9 @@ class SpecDecodeStep(InferenceStep):
             eagle_acts=eagle_sentinel,
         )
         #### STEP 1: SPECULATE ####
+        speculate_t0 = perf_counter()
         speculate_result = self.speculator.speculate(seqs, in_verify_result)
+        speculate_t1 = perf_counter()
 
         if _prof:
             torch.cuda.synchronize()
@@ -144,7 +146,9 @@ class SpecDecodeStep(InferenceStep):
 
         #### STEP 2: VERIFY ####
         out_verify_result = self.verifier.verify(seqs, speculate_result, eagle=self.eagle)
+        verify_t1 = perf_counter()
 
+        feedback_t0 = perf_counter()
         if self.async_spec and hasattr(self.speculator, "post_verify_feedback"):
             if speculate_result.ddtree_entries is not None:
                 self.speculator.post_verify_feedback(seqs, out_verify_result, speculate_result.ddtree_diag)
@@ -156,6 +160,7 @@ class SpecDecodeStep(InferenceStep):
                 self.speculator.post_verify_feedback(seqs, out_verify_result, speculate_result.dflash_diag)
             elif not self.dflash and self.ar_branch_key_mode == "oracle":
                 self.speculator.post_verify_feedback(seqs, out_verify_result)
+        feedback_t1 = perf_counter()
 
         if _prof:
             torch.cuda.synchronize()
@@ -184,6 +189,36 @@ class SpecDecodeStep(InferenceStep):
             eagle_acts=out_verify_result.eagle_acts if self.eagle else None,
             dflash_target_features=out_verify_result.dflash_target_features,
         )
+
+        if self.async_spec and not self.dflash and speculate_result.ddtree_entries is None:
+            draft_service_s = speculate_t1 - speculate_t0
+            post_verify_feedback_s = feedback_t1 - feedback_t0
+            if self.metrics is not None:
+                self.metrics["ar_draft_service_times"].append(draft_service_s)
+                self.metrics["ar_post_verify_feedback_times"].append(post_verify_feedback_s)
+                cache_hits = speculate_result.cache_hits.tolist() if speculate_result.cache_hits is not None else [0] * len(seqs)
+                target_verify_ms = (out_verify_result.target_verify_s or max(verify_t1 - speculate_t1, 0.0)) * 1000.0
+                total_cycle_ms = (perf_counter() - cycle_t0) * 1000.0
+                for row_idx, seq in enumerate(seqs):
+                    accepted_len = len(out_verify_result.new_suffixes[row_idx])
+                    cache_hit = bool(cache_hits[row_idx])
+                    self.metrics["ar_cycle_diagnostics"].append(
+                        {
+                            "seq_id": seq.seq_id,
+                            "batch_size": len(seqs),
+                            "cycle_idx": seq.dflash_cycle_idx,
+                            "accepted_len": accepted_len,
+                            "recovery_token": int(out_verify_result.recovery_tokens[row_idx]),
+                            "cache_hit": cache_hit,
+                            "draft_service_ms": draft_service_s * 1000.0,
+                            "post_verify_feedback_ms": post_verify_feedback_s * 1000.0,
+                            "target_verify_ms": target_verify_ms,
+                            "total_cycle_ms": total_cycle_ms,
+                            "tokens_committed_this_cycle": accepted_len,
+                        }
+                    )
+            for seq in seqs:
+                seq.dflash_cycle_idx += 1
 
         if speculate_result.ddtree_entries is not None and speculate_result.ddtree_diag is not None:
             diag = speculate_result.ddtree_diag

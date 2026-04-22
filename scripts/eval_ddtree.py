@@ -391,6 +391,17 @@ def _run_single(args):
 
 
 def _run_subprocess(mode: str, args, batch_size: int, tree_budget: int, frontier_count: int, port: int, artifact_dir: Path | None = None) -> dict:
+    if artifact_dir is not None:
+        result_path = artifact_dir / "result.json"
+        if result_path.exists():
+            cached = _load_json(result_path)
+            print(
+                "SKIP_RESULT_JSON "
+                f"mode={mode} batch_size={batch_size} tree_budget={tree_budget} "
+                f"frontier_count={frontier_count} artifact_dir={artifact_dir}",
+                flush=True,
+            )
+            return cached
     cmd = [
         sys.executable,
         "-O",

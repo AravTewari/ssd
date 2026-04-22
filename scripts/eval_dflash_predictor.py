@@ -110,6 +110,28 @@ def parse_args():
     )
     parser.add_argument("--batch-size", type=int, default=None, help="Internal single-run batch size")
     parser.add_argument("--artifact-dir", type=str, default=None, help="Internal artifact directory for a single run")
+    parser.add_argument(
+        "--matrix-a-modes",
+        type=str,
+        default=",".join(MATRIX_A_MODES),
+        help="Comma-separated subset of Matrix A modes to run in full-matrix execution",
+    )
+    parser.add_argument(
+        "--matrix-b-templates",
+        type=str,
+        default=",".join(BRANCH_TEMPLATES.keys()),
+        help="Comma-separated subset of Matrix B branch templates to run",
+    )
+    parser.add_argument(
+        "--skip-matrix-b",
+        action="store_true",
+        help="Skip the Matrix B branch-template sweep",
+    )
+    parser.add_argument(
+        "--skip-quality-metrics",
+        action="store_true",
+        help="Skip offline predictor quality metrics collection",
+    )
     return parser.parse_args()
 
 
@@ -621,6 +643,15 @@ def _run_single(args):
 
 
 def _run_subprocess(mode: str, args, batch_size: int | None, port: int, artifact_dir: Path | None = None) -> dict:
+    if artifact_dir is not None:
+        result_path = artifact_dir / "result.json"
+        if result_path.exists():
+            cached = _load_json(result_path)
+            print(
+                f"SKIP_RESULT_JSON mode={mode} batch_size={batch_size} artifact_dir={artifact_dir}",
+                flush=True,
+            )
+            return cached
     cmd = [
         sys.executable,
         "-O",
@@ -663,6 +694,8 @@ def _clone_args(args, **overrides):
 
 
 def _best_matrix_b_templates(matrix_b_results: list[dict]) -> dict[str, dict]:
+    if not matrix_b_results:
+        return {}
     best: dict[str, dict] = {}
     for batch_size in sorted({row["batch_size"] for row in matrix_b_results}):
         candidates = [row for row in matrix_b_results if row["batch_size"] == batch_size]
@@ -688,15 +721,38 @@ def _build_recommendation(matrix_a_results: list[dict], matrix_b_results: list[d
         (row["mode"], row["batch_size"]): row
         for row in matrix_a_results
     }
+    available_modes = {row["mode"] for row in matrix_a_results}
+    required_headroom_modes = {"exact_dflash", "dflash_ssd_exact_on_oracle"}
+    required_branch_modes = {"dflash_ssd_predicted_on_normal", "dflash_ssd_predicted_on_oracle"}
+
+    if not required_headroom_modes.issubset(available_modes):
+        return {
+            "decision_rule_a": {
+                "triggered": False,
+                "message": "Headroom recommendation unavailable because the required exact baseline/oracle modes were not run",
+                "by_batch": {},
+            },
+            "decision_rule_b": {
+                "triggered": False,
+                "message": "Branch-bottleneck recommendation unavailable because the required predicted modes were not run",
+                "by_batch": {},
+            },
+            "decision_rule_c": {
+                "best_templates_by_batch": _best_matrix_b_templates(matrix_b_results),
+                "message": "Templates ranked by throughput, then cache-committed token fraction, then joint branch recall",
+            },
+            "recommended_next_step": "insufficient_matrix_a_for_recommendation",
+        }
+
     headroom_by_batch = {}
     branch_gap_by_batch = {}
     no_meaningful_headroom = True
     branch_bottleneck = False
     for batch_size in sorted({row["batch_size"] for row in matrix_a_results}):
+        if ("exact_dflash", batch_size) not in by_mode_batch or ("dflash_ssd_exact_on_oracle", batch_size) not in by_mode_batch:
+            continue
         exact = by_mode_batch[("exact_dflash", batch_size)]
         exact_oracle = by_mode_batch[("dflash_ssd_exact_on_oracle", batch_size)]
-        predicted_normal = by_mode_batch[("dflash_ssd_predicted_on_normal", batch_size)]
-        predicted_oracle = by_mode_batch[("dflash_ssd_predicted_on_oracle", batch_size)]
         headroom_ratio = exact_oracle["throughput_tok_s"] / max(exact["throughput_tok_s"], 1e-6)
         within_five_percent = headroom_ratio <= 1.05
         headroom_by_batch[str(batch_size)] = {
@@ -707,15 +763,18 @@ def _build_recommendation(matrix_a_results: list[dict], matrix_b_results: list[d
         }
         no_meaningful_headroom = no_meaningful_headroom and within_five_percent
 
-        normal_vs_oracle_ratio = predicted_normal["throughput_tok_s"] / max(predicted_oracle["throughput_tok_s"], 1e-6)
-        branch_gap_by_batch[str(batch_size)] = {
-            "predicted_on_normal_tok_s": predicted_normal["throughput_tok_s"],
-            "predicted_on_oracle_tok_s": predicted_oracle["throughput_tok_s"],
-            "normal_vs_oracle_ratio": normal_vs_oracle_ratio,
-            "normal_is_15_percent_slower": normal_vs_oracle_ratio < 0.85,
-        }
-        if headroom_ratio > 1.05 and normal_vs_oracle_ratio < 0.85:
-            branch_bottleneck = True
+        if required_branch_modes.issubset(available_modes):
+            predicted_normal = by_mode_batch[("dflash_ssd_predicted_on_normal", batch_size)]
+            predicted_oracle = by_mode_batch[("dflash_ssd_predicted_on_oracle", batch_size)]
+            normal_vs_oracle_ratio = predicted_normal["throughput_tok_s"] / max(predicted_oracle["throughput_tok_s"], 1e-6)
+            branch_gap_by_batch[str(batch_size)] = {
+                "predicted_on_normal_tok_s": predicted_normal["throughput_tok_s"],
+                "predicted_on_oracle_tok_s": predicted_oracle["throughput_tok_s"],
+                "normal_vs_oracle_ratio": normal_vs_oracle_ratio,
+                "normal_is_15_percent_slower": normal_vs_oracle_ratio < 0.85,
+            }
+            if headroom_ratio > 1.05 and normal_vs_oracle_ratio < 0.85:
+                branch_bottleneck = True
 
     best_templates = _best_matrix_b_templates(matrix_b_results)
     recommendation_text = (
@@ -784,6 +843,15 @@ def _build_combined_markdown_table(matrix_a_results: list[dict], matrix_b_result
 
 def _run_all(args):
     batch_sizes = [int(item) for item in args.batch_sizes.split(",") if item.strip()]
+    matrix_a_modes = [mode for mode in args.matrix_a_modes.split(",") if mode]
+    unknown_matrix_a_modes = [mode for mode in matrix_a_modes if mode not in MODE_SPECS]
+    if unknown_matrix_a_modes:
+        raise ValueError(f"Unknown Matrix A modes: {unknown_matrix_a_modes}")
+    matrix_b_templates = [name for name in args.matrix_b_templates.split(",") if name]
+    unknown_templates = [name for name in matrix_b_templates if name not in BRANCH_TEMPLATES]
+    if unknown_templates:
+        raise ValueError(f"Unknown Matrix B templates: {unknown_templates}")
+
     output_path = Path(args.out) if args.out else None
     artifact_root = None
     if output_path is not None:
@@ -797,7 +865,7 @@ def _run_all(args):
 
     matrix_a_args = _clone_args(args, fanout_template_name="baseline48")
     for batch_size in batch_sizes:
-        for mode in MATRIX_A_MODES:
+        for mode in matrix_a_modes:
             artifact_dir = (
                 artifact_root / "matrix_a" / f"{mode}_b{batch_size}"
                 if artifact_root is not None else None
@@ -807,57 +875,62 @@ def _run_all(args):
             )
             run_idx += 1
 
-    for template_name in BRANCH_TEMPLATES:
-        template_args = _clone_args(args, fanout_template_name=template_name)
-        for batch_size in batch_sizes:
-            artifact_dir = (
-                artifact_root / "matrix_b" / f"{template_name}_b{batch_size}"
-                if artifact_root is not None else None
-            )
-            matrix_b_results.append(
-                _run_subprocess(
-                    "dflash_ssd_predicted_on_normal",
-                    template_args,
-                    batch_size,
-                    args.base_dist_port + run_idx,
-                    artifact_dir=artifact_dir,
+    if not args.skip_matrix_b:
+        for template_name in matrix_b_templates:
+            template_args = _clone_args(args, fanout_template_name=template_name)
+            for batch_size in batch_sizes:
+                artifact_dir = (
+                    artifact_root / "matrix_b" / f"{template_name}_b{batch_size}"
+                    if artifact_root is not None else None
                 )
-            )
-            run_idx += 1
+                matrix_b_results.append(
+                    _run_subprocess(
+                        "dflash_ssd_predicted_on_normal",
+                        template_args,
+                        batch_size,
+                        args.base_dist_port + run_idx,
+                        artifact_dir=artifact_dir,
+                    )
+                )
+                run_idx += 1
 
-    quality_artifact_dir = artifact_root / "quality_metrics" if artifact_root is not None else None
-    quality_metrics = _run_subprocess(
-        "quality_metrics",
-        matrix_a_args,
-        batch_size=None,
-        port=args.base_dist_port + run_idx,
-        artifact_dir=quality_artifact_dir,
-    )
+    quality_metrics = None
+    if not args.skip_quality_metrics:
+        quality_artifact_dir = artifact_root / "quality_metrics" if artifact_root is not None else None
+        quality_metrics = _run_subprocess(
+            "quality_metrics",
+            matrix_a_args,
+            batch_size=None,
+            port=args.base_dist_port + run_idx,
+            artifact_dir=quality_artifact_dir,
+        )
+        run_idx += 1
 
-    exact_b1 = next(
-        row for row in matrix_a_results
-        if row["mode"] == "dflash_ssd_exact_off_normal" and row["batch_size"] == 1
-    )
-    predicted_b1 = next(
-        row for row in matrix_a_results
-        if row["mode"] == "dflash_ssd_predicted_off_oracle" and row["batch_size"] == 1
-    )
-    exact_accept = exact_b1["accepted_suffix_mean"]
-    predicted_accept = predicted_b1["accepted_suffix_mean"]
-    quality_metrics["accepted_suffix_exact_context"] = exact_accept
-    quality_metrics["accepted_suffix_predicted_context"] = predicted_accept
-    quality_metrics["accepted_suffix_delta"] = (
-        None if exact_accept is None or predicted_accept is None else exact_accept - predicted_accept
-    )
+        exact_b1 = next(
+            row for row in matrix_a_results
+            if row["mode"] == "dflash_ssd_exact_off_normal" and row["batch_size"] == 1
+        )
+        predicted_b1 = next(
+            row for row in matrix_a_results
+            if row["mode"] == "dflash_ssd_predicted_off_oracle" and row["batch_size"] == 1
+        )
+        exact_accept = exact_b1["accepted_suffix_mean"]
+        predicted_accept = predicted_b1["accepted_suffix_mean"]
+        quality_metrics["accepted_suffix_exact_context"] = exact_accept
+        quality_metrics["accepted_suffix_predicted_context"] = predicted_accept
+        quality_metrics["accepted_suffix_delta"] = (
+            None if exact_accept is None or predicted_accept is None else exact_accept - predicted_accept
+        )
 
     recommendation = _build_recommendation(matrix_a_results, matrix_b_results)
     combined_table = _build_combined_markdown_table(matrix_a_results, matrix_b_results)
 
     print(combined_table)
     print()
-    print("Quality metrics:")
-    print(json.dumps(quality_metrics, indent=2, sort_keys=True))
-    print()
+    if quality_metrics is not None:
+        print("Quality metrics:")
+        print(json.dumps(quality_metrics, indent=2, sort_keys=True))
+        print()
     print("Recommendation:")
     print(json.dumps(recommendation, indent=2, sort_keys=True))
 
@@ -881,7 +954,8 @@ def _run_all(args):
     }
     if output_path is not None:
         _write_json(artifact_root / "matrix_a_summary.json", matrix_a_summary)
-        _write_json(artifact_root / "matrix_b_summary.json", matrix_b_summary)
+        if matrix_b_results:
+            _write_json(artifact_root / "matrix_b_summary.json", matrix_b_summary)
         _write_json(output_path, summary)
 
 

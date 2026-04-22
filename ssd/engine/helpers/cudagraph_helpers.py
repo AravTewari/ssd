@@ -541,7 +541,10 @@ def capture_verify_cudagraph(model_runner):
     config = model_runner.config
     # assert not model_runner.is_draft, "ERROR in capture_verify_cudagraph: verify path only supported for target model"
     hf_config = config.hf_config
-    max_bs = min(model_runner.config.max_num_seqs, 512)
+    max_bs = min(
+        model_runner.config.max_num_seqs * (model_runner.config.speculate_k + 1) * model_runner.config.async_fan_out,
+        512,
+    )
     k_plus_1 = model_runner.config.speculate_k + 1
 
     is_eagle_target = config.use_eagle and not model_runner.is_draft
@@ -778,7 +781,10 @@ def capture_glue_decode_cudagraph(model_runner):
 def capture_fi_tree_decode_cudagraph(model_runner):
     config = model_runner.config
     hf_config = config.hf_config
-    max_bs = min(model_runner.config.max_num_seqs, 512)
+    max_bs = min(
+        model_runner.config.max_num_seqs * (model_runner.config.speculate_k + 1) * model_runner.config.async_fan_out,
+        512,
+    )
     K, F = model_runner.config.speculate_k, model_runner.config.async_fan_out
     # MQ_LEN = F * (K+1)
     MQ_LEN = sum(model_runner.config.fan_out_list)
@@ -794,14 +800,14 @@ def capture_fi_tree_decode_cudagraph(model_runner):
     outputs = torch.empty(max_flat_batch_size, hf_config.hidden_size, device=model_runner.device)
     logits = torch.empty(max_flat_batch_size, hf_config.vocab_size, device=model_runner.device)
 
-    # Create graph_bs_list to match what will be used in cudagraph_helpers.py
-    graph_bs_list = [1]
-    for bs in [2, 4, 8] + list(range(16, max_bs + 1, 16)):
-        if bs <= max_bs:
-            graph_bs_list.append(bs)
+    # Mirror the async tree-decode wrapper buckets so every wrapper we may select is planned here.
+    graph_bs_list = []
+    bs = 1
+    while bs < max_bs:
+        graph_bs_list.append(bs)
+        bs *= 2
     if max_bs not in graph_bs_list:
         graph_bs_list.append(max_bs)
-    graph_bs_list.sort()
 
     graphs = {}
     graph_pool = None

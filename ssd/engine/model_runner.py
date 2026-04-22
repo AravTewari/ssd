@@ -166,8 +166,10 @@ class ModelRunner:
 
     def _init_flashinfer_wrappers(self):
         """Initialize FlashInfer wrappers for draft async mode."""
+        # Async tree-decode graph capture for larger AR/DDTree branch buckets can exceed 512 MiB.
+        # B200-class evaluation runs have ample headroom, so reserve a larger FlashInfer workspace.
         self.workspace_buffer = torch.zeros(
-            512 * 1024 * 1024, dtype=torch.uint8, device=f"cuda:{self.rank}") 
+            2 * 1024 * 1024 * 1024, dtype=torch.uint8, device=f"cuda:{self.rank}") 
 
         needs_eager_only_wrapper = (
             self.config.enforce_eager
@@ -181,7 +183,34 @@ class ModelRunner:
         if needs_eager_only_wrapper:
             self.only_prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace_buffer, "NHD")
         else: 
-            max_bs = min(self.config.max_num_seqs, 512)
+            async_tree_decode = (
+                self.config.speculate
+                and self.config.draft_async
+                and self.is_draft
+            )
+            if async_tree_decode:
+                # Async draft tree decode can issue a much larger effective batch than max_num_seqs.
+                # Mirror the fi_tree_decode bucket sizing so eager fallback path can always find a wrapper.
+                max_bs = min(
+                    self.config.max_num_seqs * (self.config.speculate_k + 1) * self.config.async_fan_out,
+                    512,
+                )
+                graph_bs_list = []
+                bs = 1
+                while bs < max_bs:
+                    graph_bs_list.append(bs)
+                    bs *= 2
+                if max_bs not in graph_bs_list:
+                    graph_bs_list.append(max_bs)
+            else:
+                max_bs = min(self.config.max_num_seqs, 512)
+                graph_bs_list = [1]
+                for bs in [2, 4, 8] + list(range(16, max_bs + 1, 16)):
+                    if bs <= max_bs:
+                        graph_bs_list.append(bs)
+                if max_bs not in graph_bs_list:
+                    graph_bs_list.append(max_bs)
+                graph_bs_list.sort()
             max_num_blocks = (self.config.max_model_len + self.block_size - 1) // self.block_size
             
             # FlashInfer kernel tensors
@@ -196,15 +225,6 @@ class ModelRunner:
             kv_last_page_len = torch.empty(max_bs, dtype=torch.int32, device=self.device)
             custom_mask_buf = torch.empty(max_bs * MQ_LEN * self.config.max_model_len, dtype=torch.uint8, device=self.device)
             mask_indptr_buf = torch.empty(max_bs + 1, dtype=torch.int32, device=self.device)
-            
-            # Create graph_bs_list to match what will be used in cudagraph_helpers.py
-            graph_bs_list = [1]
-            for bs in [2, 4, 8] + list(range(16, max_bs + 1, 16)):
-                if bs <= max_bs:
-                    graph_bs_list.append(bs)
-            if max_bs not in graph_bs_list:
-                graph_bs_list.append(max_bs)
-            graph_bs_list.sort()
             
             # Create a dict of wrappers, one for each bs we will touch in cudagraph_helpers.py
             self.prefill_wrappers = {}

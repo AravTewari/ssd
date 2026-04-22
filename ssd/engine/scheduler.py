@@ -24,8 +24,11 @@ class Scheduler:
         self.draft_backend = config.draft_backend
         self.ar_branch_cache = getattr(config, "ar_branch_cache", "on")
         self.ar_branch_key_mode = getattr(config, "ar_branch_key_mode", "normal")
+        self.async_cache_expander_backend = getattr(config, "async_cache_expander_backend", "off")
+        self.async_cache_expander_hit_k = getattr(config, "async_cache_expander_hit_k", None)
         self.F = config.async_fan_out
         self.K = config.speculate_k
+        self.ddtree_tree_budget = getattr(config, "ddtree_tree_budget", 0)
         self.block_size = config.kvcache_block_size
         self.verbose = config.verbose
         self.draft_async = config.draft_async
@@ -61,6 +64,13 @@ class Scheduler:
 
     def bms_can_allocate(self, seq: Sequence) -> bool:
         return self.block_manager.can_allocate(seq) and (not self.speculate or self.draft_block_manager.can_allocate(seq))
+
+    def _target_lookahead_len(self) -> int:
+        if self.draft_backend in {"ddtree", "ddtree_ssd"}:
+            # DDTree target verify appends the compiled tree window, whose
+            # length is driven by the tree budget rather than flat speculate_k.
+            return max(self.K + 1, self.ddtree_tree_budget + 1)
+        return self.K + 1
 
     # what if we added an option to prefill jit
     def schedule(self) -> tuple[list[Sequence], bool]:
@@ -98,20 +108,33 @@ class Scheduler:
         async_spec = self.speculate and self.draft_async
         
         if async_spec:
-            target_lookahead_len = self.K + 1
-            if self.draft_backend in {"dflash_ssd", "ddtree_ssd"} or (
-                self.draft_backend == "ar"
-                and (
-                    getattr(self, "ar_branch_cache", "on") == "off"
-                    or getattr(self, "ar_branch_key_mode", None) == "oracle"
-                )
-            ):
-                draft_lookahead_len = self.K + 1
+            if self.draft_backend == "ar" and self.async_cache_expander_backend != "off":
+                target_lookahead_len = self.async_cache_expander_hit_k + 1
+                # The hybrid Dream path can accept up to K_hit drafted tokens from
+                # the current round, then immediately background-populate the next
+                # AR cache object from that post-verify frontier. That one-round-
+                # ahead AR populate needs an additional K-token draft window.
+                draft_lookahead_len = self.async_cache_expander_hit_k + self.K + 1
             else:
-                # this will need to allow F_k strat as just sum(self.fan_out_list) when we add that 
-                draft_lookahead_len = compute_megaspec_lookahead(self.MQ_LEN, self.K)
+                target_lookahead_len = self._target_lookahead_len()
+                if (
+                    self.draft_backend == "ar"
+                    and getattr(self, "ar_branch_key_mode", None) == "oracle"
+                ):
+                    # Oracle AR background cache population drafts one extra K-token
+                    # round from the post-verify frontier, so it needs room for the
+                    # current speculative window plus a full next-round draft.
+                    draft_lookahead_len = (2 * self.K) + 1
+                elif self.draft_backend in {"dflash_ssd", "ddtree_ssd"} or (
+                    self.draft_backend == "ar"
+                    and getattr(self, "ar_branch_cache", "on") == "off"
+                ):
+                    draft_lookahead_len = self.K + 1
+                else:
+                    # this will need to allow F_k strat as just sum(self.fan_out_list) when we add that 
+                    draft_lookahead_len = compute_megaspec_lookahead(self.MQ_LEN, self.K)
         elif sync_spec:
-            target_lookahead_len = self.K + 1
+            target_lookahead_len = self._target_lookahead_len()
             draft_lookahead_len = self.K + 1
         else: # draft doesn't matter 
             target_lookahead_len = 1

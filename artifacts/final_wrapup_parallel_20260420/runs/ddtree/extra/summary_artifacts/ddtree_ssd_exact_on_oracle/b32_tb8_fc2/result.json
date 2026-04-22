@@ -1,0 +1,44 @@
+{
+  "accepted_suffix_mean": 3.606950913651021,
+  "actual_frontier_rank_distribution": {
+    "0": 2791
+  },
+  "batch_size": 32,
+  "cache_committed_token_fraction": 0.9848018277540479,
+  "cache_hit_mean": 0.9724113221067717,
+  "ddtree_step_ms": 85.56751034507948,
+  "frontier_candidate_count_mean": 2.0,
+  "frontier_count": 2,
+  "hit_cycle_latency_ms": 269.67395538992304,
+  "hit_only_accepted_suffix_mean": 3.6529108327192334,
+  "mean_cycle_latency_ms": 286.53308146099977,
+  "miss_cycle_latency_ms": 880.762538044145,
+  "miss_only_accepted_suffix_mean": 1.9870129870129871,
+  "mode": "ddtree_ssd_exact_on_oracle",
+  "num_prompts": 77,
+  "prompt_group_summary": {
+    "accepted_suffix_mean": {
+      "mean": 4.002741906795503,
+      "stderr": 0.1528384065441536
+    },
+    "cache_committed_token_fraction": {
+      "mean": 0.9848046865758551,
+      "stderr": 0.0011861941690532484
+    },
+    "cache_hit_mean": {
+      "mean": 0.9694258130641525,
+      "stderr": 0.001154491519320837
+    },
+    "throughput_tok_s": {
+      "mean": 13.837358348438308,
+      "stderr": 0.4813381961247745
+    }
+  },
+  "target_verify_ms": 102.15721930369675,
+  "throughput_tok_s": 327.4726468103922,
+  "tree_budget": 8,
+  "tree_build_ms": 34.275877757012964,
+  "tree_compile_ms": 18.202332340391173,
+  "tree_node_count_mean": 8.0,
+  "verified_node_count_mean": null
+}

@@ -1,0 +1,90 @@
+{
+  "accepted_length_support_rate": null,
+  "accepted_suffix_mean": 1.7493224932249323,
+  "accepted_suffix_mean_on_hit": null,
+  "accepted_suffix_mean_on_miss": 1.7493224932249323,
+  "batch_size": 8,
+  "cache_committed_token_fraction": 0.0,
+  "cache_hit_mean": 0.0,
+  "cache_lookup_ms": 0.0,
+  "dflash_step_ms": 32.824682805281846,
+  "fallback_rate": 0.0521680216802168,
+  "fanout_template_name": "baseline48",
+  "fraction_accepted": 0.04995483288166215,
+  "hit_cycle_latency_ms": null,
+  "hit_only_accepted_suffix_mean": null,
+  "joint_branch_recall": null,
+  "mean_cycle_latency_ms": 99.17946307157068,
+  "miss_cycle_latency_ms": 99.17946307157068,
+  "miss_only_accepted_suffix_mean": 1.7493224932249323,
+  "miss_rate": 1.0,
+  "mode": "dflash_ssd_predicted_off_oracle",
+  "num_branches_generated_mean": 0,
+  "num_prompts": 77,
+  "predictor_ms": 1.0886504121819618,
+  "prompt_group_summary": {
+    "accepted_length_support_rate": {
+      "mean": null,
+      "stderr": null
+    },
+    "accepted_suffix_mean": {
+      "mean": 2.032368457271622,
+      "stderr": 0.11443119066255839
+    },
+    "cache_committed_token_fraction": {
+      "mean": 0.0,
+      "stderr": 0.0
+    },
+    "cache_hit_mean": {
+      "mean": 0.0,
+      "stderr": 0.0
+    },
+    "dflash_ms": {
+      "mean": 33.966633544882136,
+      "stderr": 1.1980617568830751
+    },
+    "hit_only_accepted_suffix_mean": {
+      "mean": null,
+      "stderr": null
+    },
+    "joint_branch_recall": {
+      "mean": null,
+      "stderr": null
+    },
+    "mean_cycle_latency_ms": {
+      "mean": 97.26096164306071,
+      "stderr": 9.44484828190756
+    },
+    "miss_only_accepted_suffix_mean": {
+      "mean": 2.032368457271622,
+      "stderr": 0.11443119066255839
+    },
+    "miss_rate": {
+      "mean": 1.0,
+      "stderr": 0.0
+    },
+    "predictor_ms": {
+      "mean": 1.094474025131986,
+      "stderr": 0.10666001132760951
+    },
+    "recovery_recall_given_supported_accept": {
+      "mean": null,
+      "stderr": null
+    },
+    "target_verify_ms": {
+      "mean": 57.708691029691686,
+      "stderr": 7.780558181708745
+    },
+    "throughput_tok_s": {
+      "mean": 27.077676371128703,
+      "stderr": 1.7304029634009497
+    }
+  },
+  "recovery_entropy_at_actual_accept_mean": null,
+  "recovery_recall_given_supported_accept": null,
+  "recovery_top1_margin_at_actual_accept_mean": null,
+  "target_verify_ms": 58.56531873644556,
+  "throughput_tok_s": 124.31612507643771,
+  "transport_ms": 1.5227951041263779,
+  "true_branch_rank_distribution": {}
+}

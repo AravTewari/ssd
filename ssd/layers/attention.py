@@ -129,13 +129,23 @@ class Attention(nn.Module):
                 if self.only_prefill_wrapper is not None:
                     prefill_wrapper = self.only_prefill_wrapper
                 else:
-                    mq_len = self.F * (self.K+1)
-                    bs = q.shape[0] // mq_len
+                    if context.block_tables is not None:
+                        bs = context.block_tables.size(0)
+                    elif context.context_lens is not None:
+                        bs = context.context_lens.numel()
+                    else:
+                        mq_len = self.F * (self.K + 1)
+                        bs = q.shape[0] // mq_len
                     wrapper_bs = None
                     for available_bs in sorted(self.prefill_wrappers.keys()):
                         if available_bs >= bs:
                             wrapper_bs = available_bs
                             break
+                    if wrapper_bs is None:
+                        raise RuntimeError(
+                            f"no FlashInfer prefill wrapper available for tree decode batch size bs={bs}; "
+                            f"available={sorted(self.prefill_wrappers.keys())}"
+                        )
                     prefill_wrapper = self.prefill_wrappers[wrapper_bs]
                 o = prefill_wrapper.run(q, (self.k_cache, self.v_cache))
             else: # single query decode
