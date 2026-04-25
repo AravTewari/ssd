@@ -1,0 +1,89 @@
+\begin{thebibliography}{12}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Anonymous(2024{\natexlab{a}})]{ssd2024}
+Anonymous.
+\newblock Speculative speculative decoding: Overlapping draft generation with
+  verification.
+\newblock Paper studied in this project; reproduces the claim that drafting the
+  next window in parallel with current verification yields additional speedups
+  over standard speculative decoding, 2024{\natexlab{a}}.
+\newblock Reference for the SSD formulation and the ``strictly faster than SD''
+  corollary.
+
+\bibitem[Anonymous(2024{\natexlab{b}})]{sun2024ytllmfuture}
+Anonymous.
+\newblock Your {LLM} knows the future: Uncovering its multi-token prediction
+  potential.
+\newblock \url{https://arxiv.org/abs/2507.11851}, 2024{\natexlab{b}}.
+
+\bibitem[Arriola et~al.(2024)]{arriola2024blockdiffusion}
+Arriola, M. et~al.
+\newblock Block diffusion: Interpolating between autoregressive and diffusion
+  language models.
+\newblock \url{https://arxiv.org/abs/2503.09573}, 2024.
+\newblock Block-diffusion language modeling background for our drafters.
+
+\bibitem[Cai et~al.(2024)Cai, Li, Geng, Peng, Lee, Chen, and
+  Dao]{cai2024medusa}
+Cai, T., Li, Y., Geng, Z., Peng, H., Lee, J., Chen, D., and Dao, T.
+\newblock Medusa: Simple {LLM} inference acceleration framework with multiple
+  decoding heads.
+\newblock \url{https://arxiv.org/abs/2401.10774}, 2024.
+
+\bibitem[Chen et~al.(2023)Chen, Borgeaud, Irving, Lespiau, Sifre, and
+  Jumper]{chen2023specsampling}
+Chen, C., Borgeaud, S., Irving, G., Lespiau, J.-B., Sifre, L., and Jumper, J.
+\newblock Accelerating large language model decoding with speculative sampling.
+\newblock \url{https://arxiv.org/abs/2302.01318}, 2023.
+
+\bibitem[Cobbe et~al.(2021)Cobbe, Kosaraju, Bavarian, Chen, Jun, Kaiser,
+  Plappert, Tworek, Hilton, Nakano, Hesse, and Schulman]{cobbe2021gsm8k}
+Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert,
+  M., Tworek, J., Hilton, J., Nakano, R., Hesse, C., and Schulman, J.
+\newblock Training verifiers to solve math word problems.
+\newblock \url{https://arxiv.org/abs/2110.14168}, 2021.
+
+\bibitem[{DFlash Authors}(2025)]{dflash2025}
+{DFlash Authors}.
+\newblock {DFlash}: One-pass block diffusion drafters for speculative decoding.
+\newblock \url{https://github.com/z-lab/DFlash}, 2025.
+\newblock Drafter checkpoints used in this report (e.g.
+  \texttt{z-lab/Qwen3-8B-DFlash-b16}).
+
+\bibitem[Leviathan et~al.(2023)Leviathan, Kalman, and
+  Matias]{leviathan2023specdec}
+Leviathan, Y., Kalman, M., and Matias, Y.
+\newblock Fast inference from transformers via speculative decoding.
+\newblock \url{https://arxiv.org/abs/2211.17192}, 2023.
+\newblock ICML 2023.
+
+\bibitem[Li et~al.(2024)Li, Wei, Zhang, and Zhang]{li2024eagle}
+Li, Y., Wei, F., Zhang, C., and Zhang, H.
+\newblock {EAGLE}: Speculative sampling requires rethinking feature
+  uncertainty.
+\newblock \url{https://arxiv.org/abs/2401.15077}, 2024.
+
+\bibitem[Miao et~al.(2024)Miao, Oliaro, Zhang, Cheng, Wang, Wong, Zhu, Yang,
+  Shi, Shi, Chen, Arfeen, Abhyankar, and Jia]{miao2024specinfer}
+Miao, X., Oliaro, G., Zhang, Z., Cheng, X., Wang, Z., Wong, R. Y.~Y., Zhu, A.,
+  Yang, L., Shi, X., Shi, C., Chen, Z., Arfeen, D., Abhyankar, R., and Jia, Z.
+\newblock {SpecInfer}: Accelerating generative {LLM} serving with tree-based
+  speculative inference and verification.
+\newblock \url{https://arxiv.org/abs/2305.09781}, 2024.
+
+\bibitem[{NVIDIA}(2025)]{tidar2025}
+{NVIDIA}.
+\newblock {TiDAR}: Think in diffusion, talk in autoregression.
+\newblock \url{https://tidarlm.github.io}, 2025.
+
+\bibitem[{Qwen Team}(2024)]{yang2024qwen3}
+{Qwen Team}.
+\newblock Qwen3 technical report.
+\newblock \url{https://qwenlm.github.io/blog/qwen3/}, 2024.
+
+\end{thebibliography}

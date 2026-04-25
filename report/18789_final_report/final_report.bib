@@ -1,0 +1,111 @@
+% References for 18-789 final project report (Diffusion drafters for Speculative Speculative Decoding).
+
+@misc{leviathan2023specdec,
+  title        = {Fast Inference from Transformers via Speculative Decoding},
+  author       = {Leviathan, Yaniv and Kalman, Matan and Matias, Yossi},
+  year         = {2023},
+  howpublished = {\url{https://arxiv.org/abs/2211.17192}},
+  note         = {ICML 2023},
+}
+
+@misc{chen2023specsampling,
+  title        = {Accelerating Large Language Model Decoding with Speculative Sampling},
+  author       = {Chen, Charlie and Borgeaud, Sebastian and Irving, Geoffrey and Lespiau, Jean-Baptiste and Sifre, Laurent and Jumper, John},
+  year         = {2023},
+  howpublished = {\url{https://arxiv.org/abs/2302.01318}},
+}
+
+@misc{ssd2024,
+  title        = {Speculative Speculative Decoding: Overlapping Draft Generation with Verification},
+  author       = {Anonymous},
+  year         = {2024},
+  howpublished = {Paper studied in this project; reproduces the claim that drafting the next window in parallel with current verification yields additional speedups over standard speculative decoding},
+  note         = {Reference for the SSD formulation and the ``strictly faster than SD'' corollary},
+}
+
+@misc{cai2024medusa,
+  title        = {Medusa: Simple {LLM} Inference Acceleration Framework with Multiple Decoding Heads},
+  author       = {Cai, Tianle and Li, Yuhong and Geng, Zhengyang and Peng, Hongwu and Lee, Jason and Chen, Deming and Dao, Tri},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2401.10774}},
+}
+
+@misc{li2024eagle,
+  title        = {{EAGLE}: Speculative Sampling Requires Rethinking Feature Uncertainty},
+  author       = {Li, Yuhui and Wei, Fangyun and Zhang, Chao and Zhang, Hongyang},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2401.15077}},
+}
+
+@misc{miao2024specinfer,
+  title        = {{SpecInfer}: Accelerating Generative {LLM} Serving with Tree-based Speculative Inference and Verification},
+  author       = {Miao, Xupeng and Oliaro, Gabriele and Zhang, Zhihao and Cheng, Xinhao and Wang, Zeyu and Wong, Rae Ying Yee and Zhu, Alan and Yang, Lijie and Shi, Xiaoxiang and Shi, Chunan and Chen, Zhuoming and Arfeen, Daiyaan and Abhyankar, Reyna and Jia, Zhihao},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2305.09781}},
+}
+
+@misc{arriola2024blockdiffusion,
+  title        = {Block Diffusion: Interpolating Between Autoregressive and Diffusion Language Models},
+  author       = {Arriola, Marianne and others},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2503.09573}},
+  note         = {Block-diffusion language modeling background for our drafters},
+}
+
+@misc{dflash2025,
+  title        = {{DFlash}: One-pass Block Diffusion Drafters for Speculative Decoding},
+  author       = {{DFlash Authors}},
+  year         = {2025},
+  howpublished = {\url{https://github.com/z-lab/DFlash}},
+  note         = {Drafter checkpoints used in this report (e.g. \texttt{z-lab/Qwen3-8B-DFlash-b16})},
+}
+
+@misc{tidar2025,
+  title        = {{TiDAR}: Think in Diffusion, Talk in Autoregression},
+  author       = {{NVIDIA}},
+  year         = {2025},
+  howpublished = {\url{https://tidarlm.github.io}},
+}
+
+@misc{sun2024ytllmfuture,
+  title        = {Your {LLM} Knows the Future: Uncovering Its Multi-Token Prediction Potential},
+  author       = {Anonymous},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2507.11851}},
+}
+
+@misc{yang2024qwen3,
+  title        = {Qwen3 Technical Report},
+  author       = {{Qwen Team}},
+  year         = {2024},
+  howpublished = {\url{https://qwenlm.github.io/blog/qwen3/}},
+}
+
+@misc{cobbe2021gsm8k,
+  title        = {Training Verifiers to Solve Math Word Problems},
+  author       = {Cobbe, Karl and Kosaraju, Vineet and Bavarian, Mohammad and Chen, Mark and Jun, Heewoo and Kaiser, Lukasz and Plappert, Matthias and Tworek, Jerry and Hilton, Jacob and Nakano, Reiichiro and Hesse, Christopher and Schulman, John},
+  year         = {2021},
+  howpublished = {\url{https://arxiv.org/abs/2110.14168}},
+}
+
+@inproceedings{paszke2019pytorch,
+  title     = {{PyTorch}: An Imperative Style, High-Performance Deep Learning Library},
+  author    = {Paszke, Adam and Gross, Sam and Massa, Francisco and Lerer, Adam and Bradbury, James and Chanan, Gregory and Killeen, Trevor and Lin, Zeming and Gimelshein, Natalia and Antiga, Luca and others},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {32},
+  year      = {2019},
+}
+
+@misc{kwon2023vllm,
+  title        = {Efficient Memory Management for Large Language Model Serving with {PagedAttention}},
+  author       = {Kwon, Woosuk and Li, Zhuohan and Zhuang, Siyuan and Sheng, Ying and Zheng, Lianmin and Yu, Cody Hao and Gonzalez, Joseph E. and Zhang, Hao and Stoica, Ion},
+  year         = {2023},
+  howpublished = {SOSP 2023; see \url{https://github.com/vllm-project/vllm}},
+}
+
+@misc{zheng2024sglang,
+  title        = {{SGLang}: Efficient Execution of Structured Language Model Programs},
+  author       = {Zheng, Lianmin and Yin, Liangsheng and Xie, Zhiqiang and Sun, Chuyue and Huang, Jeff and Yu, Cody Hao and Cao, Shiyi and Kozyrakis, Christos and Stoica, Ion and Gonzalez, Joseph E. and Barrett, Clark and Sheng, Ying},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2312.07104}},
+}

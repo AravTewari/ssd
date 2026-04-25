@@ -1,0 +1,343 @@
+%%%%%%%% 18-789 Final Project Report (course submission, non-anonymous) %%%%%%%%%%%%%%%%%
+% Build: make report (see Makefile and README.md)
+
+\documentclass{article}
+
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath,amssymb}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit}
+\usepackage{hyperref}
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+\usepackage[accepted]{reportstyle}
+
+\reporttitlerunning{Diffusion Drafters for Speculative Speculative Decoding}
+
+\begin{document}
+
+\twocolumn[
+\reporttitle{Diffusion Drafters for Speculative Speculative Decoding: a Negative-Result Study on When Parallel Drafting Beats Autoregression}
+
+\begin{reportauthorlist}
+\reportauthor{Aditya Ramesh}{cmu}
+\reportauthor{Arav Tewari}{cmu}
+\reportauthor{Xinyu Jiang}{cmu}
+\end{reportauthorlist}
+
+\reportaffiliation{cmu}{18-789 Final Project, Carnegie Mellon University, Pittsburgh, PA, USA}
+
+\reportcorrespondingauthor{Xinyu Jiang}{xinyuj2@andrew.cmu.edu}
+
+\reportkeywords{speculative decoding, LLM serving, diffusion language models, systems-ML}
+
+\vskip 0.3in
+]
+
+\begin{abstract}
+Speculative decoding (SD) accelerates large language model (LLM) serving by using a small \emph{draft model} to propose several tokens which a larger \emph{verifier} accepts or rejects in one forward pass.
+\emph{Speculative speculative decoding} (SSD) pushes this further by pre-drafting the next window \emph{in parallel} with the verifier's current step, so draft latency is hidden behind the already-expensive verifier forward.
+Because SSD's benefit scales with how much draft latency can be hidden, a natural hypothesis is that \emph{diffusion} drafters---which decode multiple tokens in one pass---should be especially good partners for SSD.
+We test this hypothesis on Qwen3-8B as the verifier with three drafter families: an autoregressive (AR) drafter, a one-pass block-diffusion drafter (DFlash), and a tree-structured diffusion drafter (DDTree).
+Across batch sizes $b\in\{1,2,4\}$ and two output-length regimes (32 and 128), we evaluate three modes per family: \emph{exact-off} (SD-style synchronous drafting), \emph{exact-on oracle} (SSD with a perfect predictor---the architectural ceiling), and \emph{realized} (the actual asynchronous system).
+The empirical story is a clean negative result: the AR drafter's oracle ceiling beats both diffusion oracles at every batch size in the main regime (up to $242$~tok/s at $b{=}4$ vs.\ $119$ and $141$ for DFlash and DDTree), and even in the best case diffusion drafters only match AR on a narrow slice.
+Worse, the realized diffusion systems pay heavy branch-prediction and cache-miss costs: realized DFlash drops to $\sim$10\% cache hit rate and $24$--$36$~tok/s, well below its own SD baseline.
+We trace this to a systems insight that contradicts the SSD paper's ``strictly faster than SD'' corollary in practice: SSD only helps when the drafter has \emph{serial} latency to hide, which diffusion drafters already removed.
+Code, evaluation harness, and full run artifacts are released with this submission (see \S\ref{sec:exp} for the reproduction recipe).
+\end{abstract}
+
+\section{Introduction / Motivation}
+\label{sec:intro}
+
+Autoregressive (AR) LLM decoding is fundamentally sequential: each token depends on the full prefix, so a 32B-parameter model pays a full forward pass per output token.
+Speculative decoding (SD)~\citep{leviathan2023specdec,chen2023specsampling} breaks this by running a small \emph{draft} model to propose $k$ candidate tokens and then verifying them with one target-model forward; accepted tokens cost one verifier step, not $k$.
+\emph{Speculative speculative decoding} (SSD) extends this idea by observing that while the verifier is computing step $t$'s logits, the drafter is idle---so the drafter can start pre-drafting step $t+1$ \emph{based on a predicted future prefix}, overlapping future draft work with current verification.
+The SSD paper proves a corollary (``strictly faster than SD'') that SSD with primary and backup speculators both set to $\mathcal{M}$ does no worse than SD with $\mathcal{M}$~\citep{ssd2024}.
+
+\paragraph{Problem statement.}
+The SSD speedup depends on two things: (i)~how much \emph{sequential} drafter latency is available to hide, and (ii)~how well the drafter can predict the future prefix cheaply.
+Current SSD systems assume an AR drafter.
+\emph{Diffusion} language models~\citep{arriola2024blockdiffusion}, and in particular block-diffusion drafters such as DFlash~\citep{dflash2025}, generate an entire block of tokens in one parallel pass and are therefore faster per draft, but also force a different notion of ``future prefix.''
+This sets up the core question of our project: can diffusion drafters---which parallelize \emph{within} a draft step---serve as better SSD drafters than AR drafters, given that SSD's whole purpose is to parallelize \emph{between} draft and verify steps?
+
+\paragraph{Why this matters.}
+LLM serving economics are dominated by decode-time throughput per GPU.
+SD already gives $2$--$3\times$ throughput on practical verifiers; SSD promises another $\sim$$30$--$40$\% on top.
+If diffusion drafters compose well with SSD, they could give a multiplicative win and replace AR drafters across the stack.
+If they do not---as this report finds---the community should stop treating ``more parallel drafter'' as axiomatically better for SSD, and instead measure \emph{where the hidden latency actually is}.
+
+\paragraph{Goal and contributions.}
+We implement a matched-budget evaluation harness (in \texttt{ssd/}) that runs AR, DFlash, and DDTree drafters against the same Qwen3-8B verifier~\citep{yang2024qwen3} under three modes per family (exact-off, exact-on oracle, realized).
+Our contributions are:
+\textbf{(i)} An \emph{async drafter--verifier runtime} (\texttt{ssd/engine/}) with pluggable speculator backends (\texttt{speculator\_sync*.py}, \texttt{speculator\_async*.py}) supporting AR, one-pass DFlash, and tree-structured DDTree drafts behind a common \texttt{draft\_runner} interface.
+\textbf{(ii)} A \emph{fair three-mode evaluation protocol} that separates baseline drafter quality (exact-off), architectural ceiling (exact-on oracle), and end-to-end system performance (realized)---so we can attribute gains or losses to \emph{architecture} vs.\ \emph{implementation}.
+\textbf{(iii)} A negative empirical result with the above three families on Qwen3-8B showing that under SSD, AR oracle $>$ diffusion oracle at every batch size tested in the main regime, and that realized diffusion drafters lose $\sim$$85$--$91$\% of their SSD cache-hit headroom to branch mispredictions (Table~\ref{tab:main}).
+\textbf{(iv)} A \emph{mechanistic explanation}: SSD helps most when the drafter has serial latency to hide, which diffusion drafters already removed---so the ``free'' overlap SSD offers has little room to operate.
+
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Speculative decoding families.}
+Standard SD~\citep{leviathan2023specdec,chen2023specsampling} uses an AR drafter to generate $k$ tokens and rejection-samples them against the verifier.
+Tree-based variants (SpecInfer~\citep{miao2024specinfer}, Medusa~\citep{cai2024medusa}) draft multiple branches simultaneously to raise the accept rate.
+EAGLE~\citep{li2024eagle} replaces the drafter with a small feature-level head on top of the verifier, reducing drafter cost.
+All of these remain synchronous: the verifier \emph{waits} for the drafter before each step.
+
+\paragraph{Asynchronous / overlapped drafting.}
+SSD~\citep{ssd2024} is the most direct prior work.
+It introduces a \emph{primary} speculator that pre-drafts the next window and a \emph{backup} speculator that provides the current draft; when the primary's future-prefix prediction is right (a ``cache hit''), SSD hides the drafter behind verification.
+Related ideas appear in TiDAR~\citep{tidar2025} and ``Your LLM Knows the Future''~\citep{sun2024ytllmfuture}, which use the target model itself to pre-speculate by re-using its forward pass---more expensive but requires no separate drafter state.
+
+\paragraph{Diffusion language models as drafters.}
+Block-diffusion~\citep{arriola2024blockdiffusion} and DFlash~\citep{dflash2025} decode a whole block in a single parallel pass, trading per-token quality for per-block latency.
+DDTree extends this by emitting a compact tree of diffusion branches for tree verification.
+
+\paragraph{How our method differs.}
+Prior work either measures drafters under SD alone, or evaluates SSD only with AR drafters.
+We hold the drafter family variable \emph{and} run the same matched-budget pipeline under three modes, so we can disentangle ``architecture is weak for SSD'' from ``implementation is weak for SSD''---an important distinction for a course-scale systems study.
+Our evaluation is the first (to our knowledge) to place diffusion drafters specifically under the SSD overlap regime.
+
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Why the method is non-trivial}
+A naive ``plug diffusion in as the SSD drafter'' comparison is misleading for three reasons.
+First, SSD's cache-hit rate depends on how well a \emph{future prefix} can be predicted cheaply; diffusion drafters that emit block tokens in parallel expose a different future-state object than AR drafters.
+Second, the diffusion drafter's realized cost includes tree-construction and branch scoring, which are hard to overlap with verification on the same GPU due to KV-cache contention.
+Third, an unfair comparison can easily be made by tuning branch templates for one family and not another; we therefore fix a single branch template (\texttt{baseline48}) and sweep only published SSD knobs ($k$, tree budget, frontier count).
+
+\subsection{System overview}
+Figure~\ref{fig:sys} shows the async runtime.
+Python selects a drafter family; the \texttt{scheduler} dispatches verify work on the target (Qwen3-8B) while a separate \texttt{speculator\_async} coroutine pre-drafts the next window on a predicted future prefix.
+When the prediction matches the verifier's committed prefix, the pre-drafted block is reused (``cache hit''); otherwise the realized system falls back to a synchronous draft on the committed prefix.
+All three drafter families (\texttt{speculator\_sync.py} for AR, \texttt{speculator\_sync\_dflash.py} for one-pass diffusion, \texttt{speculator\_sync\_ddtree.py} for tree diffusion) share one interface so the scheduler code is identical.
+
+\begin{figure}[t]
+  \centering
+  \resizebox{0.95\columnwidth}{!}{%
+  \begin{tikzpicture}[
+    font=\scriptsize,
+    box/.style={draw, rounded corners, align=center, inner sep=3pt, minimum width=2.1cm},
+    arr/.style={-{Latex}, thick},
+ ]
+    \node[box, fill=blue!6] (in) {Prompt + prefix};
+    \node[box, below=0.32cm of in, fill=green!8] (sched) {Scheduler\\\texttt{ssd/engine/scheduler.py}};
+    \node[box, below left=0.42cm and 0.1cm of sched, fill=orange!10] (ver) {Verifier\\Qwen3-8B};
+    \node[box, below right=0.42cm and 0.1cm of sched, fill=gray!12] (spec) {Async Speculator\\\{AR, DFlash, DDTree\}};
+    \node[box, below=1.25cm of sched, fill=cyan!6] (out) {Accepted tokens + metrics};
+    \draw[arr] (in) -- (sched);
+    \draw[arr] (sched) -- (ver);
+    \draw[arr] (sched) -- (spec);
+    \draw[arr] (spec) -- node[right,font=\tiny] {pre-draft $t{+}1$} (sched);
+    \draw[arr] (ver) |- (out);
+    \draw[arr] (spec) |- (out);
+  \end{tikzpicture}%
+  }
+  \caption{Async SSD runtime: one scheduler, one verifier, pluggable speculator backend.
+  The speculator pre-drafts $t{+}1$ in parallel with verification of $t$; on cache hit, the pre-draft is reused.}
+  \label{fig:sys}
+\end{figure}
+
+\subsection{Three evaluation modes (fairness gate)}
+\label{ssec:modes}
+For each drafter family we run three modes on the same prompts, verifier, and hardware:
+\begin{description}
+  \item[Exact-off.] Synchronous drafting; no SSD overlap. Baseline quality/speed of the drafter family (equivalent to standard SD).
+  \item[Exact-on oracle.] SSD with a \emph{perfect} future-prefix predictor: the scheduler is given the committed prefix from the future, so the pre-draft always hits. The architectural ceiling---the best SSD could ever do for this family.
+  \item[Realized.] The actual async system with a learned predictor; cache hits are not guaranteed. The number a user would see in production.
+\end{description}
+Separating oracle from realized is crucial: if a family's oracle is not meaningfully above its exact-off, no amount of better prediction can save it (e.g.\ DFlash at $b{=}1$).
+
+\subsection{Drafter families}
+\textbf{AR drafter}: Qwen3-$\{0.6,1.7,4\}$B as drafters; token-by-token block draft of length $k$; used in standard SD baselines and as our SSD reference.
+\textbf{DFlash}: one-pass block diffusion drafter based on \texttt{z-lab/Qwen3-8B-DFlash-b16}~\citep{dflash2025}; decodes $b{=}16$ tokens per pass.
+Branch templates control which future-prefix variants are pre-drafted (\texttt{fanout\_template\_name=baseline48}).
+\textbf{DDTree}: diffusion drafter plus a compact tree-verification front-end; swept over tree budget $N\in\{8,16\}$ and frontier count $F\in\{1,2\}$.
+
+\subsection{Implementation notes}
+The engine lives at \texttt{ssd/engine/} with per-family runners (\texttt{dflash\_runtime.py}, \texttt{ddtree\_runtime.py}, \texttt{draft\_runner.py}).
+Evaluation scripts are \texttt{ssd/eval\_ar\_ssd\_baseline.py}, \texttt{ssd/eval\_dflash\_predictor.py}, \texttt{ssd/eval\_ddtree.py}, and the matched wrap-up driver \texttt{ssd/eval\_final\_wrapup.py}.
+The figure and table generators in \texttt{ssd/render\_final\_wrapup\_figures.py} consume one JSON (\texttt{final\_summary.json}) emitted by the wrap-up driver, so the report is reproducible from a single command line (\S\ref{sec:exp}).
+
+\subsection{DFlash training (attempted, partial)}
+Because the available public DFlash checkpoints only support small verifiers, we attempted to train our own DFlash predictor for Qwen3-8B (\texttt{ssd/train\_dflash\_predictor.py}), with standard block-diffusion training plus KV injection, random masked-block sampling, loss weighting for faster convergence, and a shared embedding/LM head.
+We observed \emph{mode collapse} (the model persistently predicted \texttt{\textbackslash n\textbackslash n}); removing KL distillation and training longer did not resolve it in the project's wall-clock budget.
+We fall back to the public DFlash-b16 checkpoint for reported numbers.
+
+\section{Experimental Results}
+\label{sec:exp}
+
+\paragraph{Hardware and software.}
+Target: Qwen3-8B.
+Hardware: the main regime runs on $2{\times}$B200 (final wrap-up) and was cross-checked with an earlier $2{\times}$H100 Modal run from the presentation; trends match.
+Decode: greedy.
+Main regime: output length $32$, $b\in\{1,2,4\}$.
+Extra SSD-favorable regime: output length $128$.
+Held-out: 78 prompt groups from our \texttt{ddtree\_prompt\_split}.
+AR baseline sweep uses Qwen3-$\{0.6,1.7,4\}$B drafters on GSM8K~\citep{cobbe2021gsm8k} and Qwen3-32B as a larger verifier point for cross-checking.
+
+\paragraph{Metrics.}
+Decode throughput (tok/s); accepted suffix length per step; SSD cache hit rate; and---for the fairness gate---oracle vs.\ exact-off delta and realized vs.\ oracle gap.
+95\% bootstrap confidence intervals are computed over prompt groups.
+
+\subsection{Main result: oracle ceiling favors AR}
+\label{ssec:oracle}
+
+\begin{table}[t]
+  \caption{Main regime (output length 32) on Qwen3-8B: throughput (tok/s) by family and mode. \emph{Oracle} is the SSD architectural ceiling; \emph{realized} is the actual async system. AR oracle dominates both diffusion oracles at every batch size.}
+  \label{tab:main}
+  \begin{center}
+    \begin{small}
+      \setlength{\tabcolsep}{6pt}
+      \begin{tabular}{@{}lrrr@{}}
+        \toprule
+        Family & $b$ & Oracle & Realized \\
+        \midrule
+        AR      & 1 &  79.9 &  63.6 \\
+        AR      & 2 & 201.5 & 154.4 \\
+        AR      & 4 & 242.1 & 125.4 \\
+        \midrule
+        DFlash  & 1 &  50.9 &  24.1 \\
+        DFlash  & 2 &  91.8 &  30.1 \\
+        DFlash  & 4 & 119.3 &  35.5 \\
+        \midrule
+        DDTree  & 1 &  81.5 &  67.9 \\
+        DDTree  & 2 & 119.3 &  97.2 \\
+        DDTree  & 4 & 141.1 & 131.4 \\
+        \bottomrule
+      \end{tabular}
+    \end{small}
+  \end{center}
+\end{table}
+
+Table~\ref{tab:main} answers our central question.
+The AR oracle reaches $242$~tok/s at $b{=}4$, while DFlash and DDTree oracles reach only $119$ and $141$~tok/s respectively in the same mode---\emph{even though the diffusion families decode multiple tokens in parallel per draft}.
+DDTree is the strongest diffusion family and ties AR at $b{=}1$ ($81.5$ vs.\ $79.9$), but falls behind from $b{=}2$ onward.
+In the extra regime (output length 128) DDTree oracle exceeds AR at $b{=}1$ ($128$ vs.\ $106$) but AR recovers the lead from $b{=}4$ onward---the upside is narrow and regime-specific.
+
+\subsection{Realized systems pay heavy implementation costs}
+
+The realized column of Table~\ref{tab:main} collapses the story further.
+DFlash realized throughput is $24$--$36$~tok/s---well below its own exact-off baseline of $62$--$130$~tok/s.
+The cause is visible in the recorded metrics: the DFlash realized cache hit rate is $\sim$$9$\%, vs.\ $92$\% for the DFlash oracle; DDTree realized hit rate is $<$$1$\% vs.\ $90$\% oracle.
+In other words, the branch predictor we trained cannot match even weak diffusion futures, so the realized system pays the worst of both worlds: it still does a predicted pre-draft (wasted work) and then falls back to a synchronous diffusion draft (full cost).
+AR's realized system degrades more gracefully because the committed-prefix fallback shares most of the cost with the already-running AR backup.
+
+\subsection{Normalized SSD headroom}
+
+Figure~\ref{fig:headroom} plots $\text{oracle}/\text{exact-off}$ per family---how much upside SSD \emph{architecture} offers, independent of predictor quality.
+AR has $2.2$--$2.7\times$ headroom in the main regime at $b\le 4$; DFlash and DDTree hover around $1.0\times$ (sometimes below).
+That is the core negative result: the SSD paper's ``strictly faster than SD'' corollary is tight only when the drafter has sequential latency to hide, which diffusion drafters have already spent within a single draft pass.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\columnwidth]{figure_normalized_speedup.png}
+  \caption{Normalized SSD headroom: oracle tok/s divided by exact-off tok/s.
+    Values near $1.0$ mean SSD's architectural ceiling offers no meaningful speedup for that family.
+    AR has $2\times$--$2.7\times$ headroom at $b\le 4$; diffusion families sit near $1.0\times$.
+    Generated by \texttt{ssd/render\_final\_wrapup\_figures.py}.}
+  \label{fig:headroom}
+\end{figure}
+
+\subsection{Drafter-scale sensitivity (cross-check)}
+
+\begin{table}[t]
+  \caption{Cross-check on Qwen3-32B verifier, batch size 1, GSM8K: decode throughput (tok/s) as AR drafter size scales. Smaller drafters have higher total throughput but lower accept rate; SSD overhead can reduce throughput below SD when the drafter is already tiny.}
+  \label{tab:ar-scale}
+  \begin{center}
+    \begin{small}
+      \begin{tabular}{@{}lrrr@{}}
+        \toprule
+        Drafter      & AR  & SD  & SSD \\
+        \midrule
+        Qwen3-0.6B   & 94  & 161 & 186 \\
+        Qwen3-1.7B   & 94  & 143 & 158 \\
+        Qwen3-4B     & 94  & 106 &  99 \\
+        \bottomrule
+      \end{tabular}
+    \end{small}
+  \end{center}
+\end{table}
+
+Table~\ref{tab:ar-scale} confirms the systems intuition from the opposite direction: as the AR drafter grows, the accept rate improves ($0.54{\to}0.67$) and tokens/step rise ($4.22{\to}5.03$), but SSD's overhead begins to outweigh the overlap benefit---$4$B drafter SSD is \emph{below} SD at $99$ vs.\ $106$~tok/s.
+The sweet spot for SSD is a drafter small enough to overlap but big enough to be accurate.
+Diffusion drafters sit outside this sweet spot because they are both expensive per call (parallel decode $\neq$ cheap) and already fast enough that there is little serial tail to hide.
+
+\subsection{Ablation: speculation length $k$}
+
+A $k$-sweep with $b{=}1$ on Qwen3-32B shows that increasing $k$ raises accepted tokens per step (more candidates land) but also raises draft latency, so SSD peaks at $k{=}4$ ($215$~tok/s) and collapses at $k{=}16$ ($103$~tok/s), confirming the bias--variance-like tradeoff behind SSD's sensitivity to drafter workload.
+The budget frontier (Figure~\ref{fig:k-sweep}) sweeps AR $k$ and DDTree tree budgets jointly with DFlash as fixed points.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\columnwidth]{figure_budget_frontier.png}
+  \caption{Throughput--accept-rate frontier swept over AR $k$ and DDTree budgets; DFlash shown as fixed points. Produced by the wrap-up driver (\texttt{eval\_final\_wrapup.py}) and rendered by \texttt{render\_final\_wrapup\_figures.py}.}
+  \label{fig:k-sweep}
+\end{figure}
+
+\subsection{Reproducibility}
+From the code repo root:
+\begin{enumerate}
+  \item Install: \texttt{pip install -e .} (pyproject ships pinned deps).
+  \item Download weights: \texttt{python ssd/download\_from\_hf.py}.
+  \item Run the wrap-up driver: \texttt{bash scripts/run\_ar\_len32\_wrapup.sh} and the analogous DFlash / DDTree driver scripts.
+  \item Render figures and tables: \texttt{python scripts/render\_final\_wrapup\_figures.py}.
+  \item Rebuild this PDF: \texttt{make report} inside the report directory.
+\end{enumerate}
+Every table and figure in this report is produced by the wrap-up driver and its associated renderer script; the driver emits a single \texttt{final\_summary.json} which downstream scripts consume, so all numbers track one source of truth.
+
+\section{Discussion and Lessons}
+\label{sec:disc}
+
+\paragraph{When does SSD help?}
+Our empirical and architectural evidence converges on one rule: \emph{SSD helps when the drafter has serial latency to hide and the future prefix is cheap to predict}.
+AR drafters satisfy both: they are inherently sequential within a block, and the future prefix is well-approximated by the drafter's own greedy continuation.
+DFlash satisfies neither: its block is already parallel, so there is nothing to hide behind verification, and its future block is not uniquely determined by any simple function of the past tokens.
+DDTree partially satisfies the second (tree branches expose uncertainty explicitly), which is why its oracle touches AR at $b{=}1$, but the within-round tree already spends most of the parallel budget.
+
+\paragraph{Corollary is tight only in theory.}
+The SSD ``strictly faster than SD'' corollary assumes zero SSD system overhead and $p_{\text{hit}}>0$.
+In realized implementations on a shared GPU, the drafter--verifier coupling (KV cache, CUDA streams, Python scheduler) adds overhead that can flip the inequality---this is what we see in Qwen3-4B SSD vs.\ SD (Table~\ref{tab:ar-scale}) and across all realized diffusion rows.
+
+\paragraph{What the negative result is \emph{not}.}
+We do not claim diffusion drafters are useless: they remain competitive under standard SD (exact-off throughput is similar to AR for DFlash at $b{=}1$, and DDTree is the best family at $b{=}1$ in our extra regime).
+We claim that \emph{grafting SSD onto them does not unlock additional throughput}, which is a narrower statement but directly relevant to serving-system roadmaps that assume parallel drafters are free SSD wins.
+
+\paragraph{Limitations.}
+We evaluate one verifier (Qwen3-8B) and one dataset family (GSM8K-style prompts) in the main regime; other domains (code, long-form) may shift the picture.
+Our DFlash predictor is trained on a small corpus and saw mode collapse; a stronger predictor could in principle move realized performance closer to oracle, but it cannot lift the \emph{oracle} itself, which is where the story is already lost for diffusion.
+Hardware is B200 / H100 class; we did not test A100 or commodity GPUs.
+
+\paragraph{Future work.}
+Two directions are worth pursuing.
+First, \emph{hybrid drafters} that use an AR head on top of a diffusion block could retain diffusion's accept-rate advantage while exposing enough serial structure for SSD to bite.
+Second, \emph{learned branch templates} that condition on entropy of the verifier's logits could raise realized cache hit rates for DDTree without the current prediction-vs-fallback waste.
+
+\section{Team Contributions}
+\label{sec:contrib}
+The three authors worked jointly on the project scope and writing.
+Individual primary contributions:
+
+\begin{itemize}
+  \item \textbf{Aditya Ramesh} led the tree-structured diffusion drafter, contributing the DDTree design, the budget and frontier-count sweeps, and the related-work survey positioning our results against TiDAR and ``Your LLM Knows the Future.''
+  \item \textbf{Arav Tewari} led the diffusion side of the stack: integrating the DFlash block-diffusion drafter into the asynchronous runtime, training the DFlash predictor, and diagnosing the mode-collapse failure. Tightening the draft-latency budget of this component remains the most promising direction for follow-up work.
+  \item \textbf{Xinyu Jiang} led the experimental pipeline: running the AR baselines under SD and SSD across batch sizes and drafter scales, producing the oracle / exact-off / realized decomposition, generating the figures and tables, and drafting this report.
+\end{itemize}
+
+\section{Conclusion}
+\label{sec:conc}
+We set out to test whether diffusion drafters---which parallelize within a draft step---would be better partners for SSD than AR drafters.
+Under a matched-budget evaluation on Qwen3-8B with three drafter families and three modes, the answer is no at every batch size in our main regime: AR's SSD oracle beats DFlash and DDTree oracles, and realized diffusion systems suffer additional cache-hit losses that push them below standard SD.
+The explanation is mechanical: SSD's overlap has room to operate only when drafter latency is serial, which diffusion has already spent within a single block.
+This is a tidy negative result with direct implications for serving-system design: parallel drafters and SSD are not complementary by default, and future work that proposes diffusion-SSD hybrids must first demonstrate non-trivial oracle headroom before investing in realized-system engineering.
+We release the evaluation harness and artifacts so other groups can rebuild these numbers end-to-end.
+
+\section*{Acknowledgements}
+We thank the 18-789 course staff for compute and guidance, and the authors of the SSD, DFlash, and block-diffusion papers for releasing code and checkpoints.
+
+\bibliography{final_report}
+\bibliographystyle{reportstyle}
+
+\end{document}
