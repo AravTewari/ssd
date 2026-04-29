@@ -1,32 +1,15 @@
-\begin{thebibliography}{12}
+\begin{thebibliography}{13}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
 
-\bibitem[Anonymous(2024{\natexlab{a}})]{ssd2024}
-Anonymous.
-\newblock Speculative speculative decoding: Overlapping draft generation with
-  verification.
-\newblock Paper studied in this project; reproduces the claim that drafting the
-  next window in parallel with current verification yields additional speedups
-  over standard speculative decoding, 2024{\natexlab{a}}.
-\newblock Reference for the SSD formulation and the ``strictly faster than SD''
-  corollary.
-
-\bibitem[Anonymous(2024{\natexlab{b}})]{sun2024ytllmfuture}
-Anonymous.
-\newblock Your {LLM} knows the future: Uncovering its multi-token prediction
-  potential.
-\newblock \url{https://arxiv.org/abs/2507.11851}, 2024{\natexlab{b}}.
-
 \bibitem[Arriola et~al.(2024)]{arriola2024blockdiffusion}
 Arriola, M. et~al.
 \newblock Block diffusion: Interpolating between autoregressive and diffusion
   language models.
 \newblock \url{https://arxiv.org/abs/2503.09573}, 2024.
-\newblock Block-diffusion language modeling background for our drafters.
 
 \bibitem[Cai et~al.(2024)Cai, Li, Geng, Peng, Lee, Chen, and
   Dao]{cai2024medusa}
@@ -52,8 +35,11 @@ Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert,
 {DFlash Authors}.
 \newblock {DFlash}: One-pass block diffusion drafters for speculative decoding.
 \newblock \url{https://github.com/z-lab/DFlash}, 2025.
-\newblock Drafter checkpoints used in this report (e.g.
-  \texttt{z-lab/Qwen3-8B-DFlash-b16}).
+
+\bibitem[Kumar et~al.(2026)Kumar, Dao, and May]{kumar2026ssd}
+Kumar, T., Dao, T., and May, A.
+\newblock Speculative speculative decoding.
+\newblock \url{https://arxiv.org/abs/2603.03251}, 2026.
 
 \bibitem[Leviathan et~al.(2023)Leviathan, Kalman, and
   Matias]{leviathan2023specdec}
@@ -85,5 +71,16 @@ Miao, X., Oliaro, G., Zhang, Z., Cheng, X., Wang, Z., Wong, R. Y.~Y., Zhu, A.,
 {Qwen Team}.
 \newblock Qwen3 technical report.
 \newblock \url{https://qwenlm.github.io/blog/qwen3/}, 2024.
+
+\bibitem[Ringel \& Romano(2026)Ringel and Romano]{ringel2026ddtree}
+Ringel, L. and Romano, Y.
+\newblock Accelerating speculative decoding with block diffusion draft trees.
+\newblock \url{https://arxiv.org/abs/2604.12989}, 2026.
+
+\bibitem[Sun et~al.(2024)]{sun2024ytllmfuture}
+Sun, H. et~al.
+\newblock Your {LLM} knows the future: Uncovering its multi-token prediction
+  potential.
+\newblock \url{https://arxiv.org/abs/2507.11851}, 2024.
 
 \end{thebibliography}

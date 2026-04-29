@@ -47,3 +47,8 @@ tmp*/
 
 # Documents
 *.pdf
+# ...except the final report PDF, which is the deliverable for the course.
+!report/18789_final_report/final_report.pdf
+
+# Downloaded reference papers (kept locally for cross-checking, not committed)
+report/reference/
